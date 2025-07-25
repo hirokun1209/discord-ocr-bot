@@ -8,6 +8,7 @@ import os
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+# OCRモード: 1行ずつ解析
 OCR_CONFIG = "--oem 3 --psm 7"
 
 intents = discord.Intents.default()
@@ -17,7 +18,7 @@ client = discord.Client(intents=intents)
 def preprocess_image(img: Image.Image) -> Image.Image:
     """OCR前に画像拡大＋補正"""
     img = img.resize((img.width * 2, img.height * 2))  # 2倍拡大
-    img = img.convert("L")  # グレースケール
+    img = img.convert("L")  # グレースケール化
     img = ImageEnhance.Contrast(img).enhance(2.0)  # コントラスト強調
     img = img.filter(ImageFilter.SHARPEN)  # シャープ化
     return img
@@ -28,17 +29,21 @@ def crop_top_right(img: Image.Image) -> Image.Image:
     return img.crop((w * 0.75, h * 0.07, w * 0.98, h * 0.13))
 
 def crop_center_area(img: Image.Image) -> Image.Image:
-    """中央OCR → さらに下を削って高さ35〜65%"""
+    """中央OCR → 下を削って高さ35〜65%"""
     w, h = img.size
     return img.crop((w * 0.1, h * 0.35, w * 0.9, h * 0.65))
 
 def clean_ocr_text(text: str) -> str:
-    """OCR結果の不要文字補正"""
+    """OCR結果の不要文字・誤認補正"""
     text = text.replace("を奪取しました", "")
     text = text.replace("奪取撃破数", "")
     text = text.replace("警備撃破数", "")
+    # よくあるOCR誤字補正
     text = text.replace("駐脱場", "駐騎場")
     text = text.replace("駐聴場", "駐騎場")
+    text = text.replace("越域駐豚場", "越域駐騎場")
+    text = re.sub(r"(\d)[;；](\d)", r"\1:\2", text)  # 23;23 → 23:23 に補正
+    text = re.sub(r"O(\d)", r"0\1", text)  # O3:25 → 03:25 に補正
     return text
 
 def extract_base_time(text: str) -> str:
@@ -72,13 +77,13 @@ def extract_times(text: str):
         elif len(parts) == 2:
             first, second = map(int, parts)
             if first < 6:
-                h, m, s = first, second, 0
+                h, m, s = first, second, 0  # HH:MM
             else:
-                h, m, s = 0, first, second
+                h, m, s = 0, first, second  # MM:SS
             t = f"{h:02}:{m:02}:{s:02}"
         else:
             continue
-        if 0 <= h <= 6:
+        if 0 <= h <= 6:  # 最大6時間まで有効
             immune_times.append(t)
     return immune_times
 
@@ -96,7 +101,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、OCRデバッグ中…")
+        await message.channel.send("📥 画像を受け取りました、OCR処理中…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
@@ -104,19 +109,16 @@ async def on_message(message):
 
             # === 基準時間OCR（右上ピンポイント） ===
             base_img = preprocess_image(crop_top_right(img))
-            base_img.save("/tmp/debug_base.png")
-            await message.channel.send(file=discord.File("/tmp/debug_base.png", "base_debug.png"))
             base_text = pytesseract.image_to_string(base_img, lang="eng", config="--psm 7")
             base_time = extract_base_time(base_text)
 
-            # === 中央OCR（駐騎場情報 下をさらに削った版） ===
+            # === 中央OCR（駐騎場情報のみ） ===
             center_img = preprocess_image(crop_center_area(img))
-            center_img.save("/tmp/debug_center.png")
-            await message.channel.send(file=discord.File("/tmp/debug_center.png", "center_debug.png"))
             center_text = clean_ocr_text(
                 pytesseract.image_to_string(center_img, lang="jpn", config=OCR_CONFIG)
             )
 
+            # デバッグ結果送信（位置確認OKなら削除しても良い）
             await message.channel.send(f"⏫ 基準時間OCR:\n```\n{base_text}\n```")
             await message.channel.send(f"📄 中央OCR結果:\n```\n{center_text}\n```")
 
@@ -125,10 +127,12 @@ async def on_message(message):
             station_numbers = extract_station_numbers(center_text)
             immune_times = extract_times(center_text)
 
+            # 基準時間が読めなかった場合
             if not base_time:
                 await message.channel.send("⚠️ 基準時間が右上から読み取れませんでした")
                 return
 
+            # データ数が一致しない場合は警告
             if len(station_numbers) != len(immune_times):
                 await message.channel.send(
                     f"⚠️ データ数不一致\n"

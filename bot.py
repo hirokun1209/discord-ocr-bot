@@ -29,8 +29,20 @@ def crop_top_right(img):
 
 def crop_center_area(img):
     w,h = img.size
-    # **狭める: 高さ35%〜65%**
+    # 中央領域は狭めたまま（35%〜65%）
     return img.crop((w*0.05, h*0.35, w*0.55, h*0.65))
+
+# ===== 中央OCR領域を分割プレビュー =====
+def split_preview(center_raw, parts=6):
+    w, h = center_raw.size
+    h_part = h // parts
+    images = []
+    for i in range(parts):
+        y1 = i * h_part
+        y2 = (i+1) * h_part
+        part_img = center_raw.crop((0, y1, w, y2))
+        images.append(part_img)
+    return images
 
 # ===== OCR共通 =====
 def ocr_text(img: Image.Image, psm=4) -> str:
@@ -39,7 +51,6 @@ def ocr_text(img: Image.Image, psm=4) -> str:
 
 # ===== 時間専用OCR（数字限定モード） =====
 def ocr_time_line(img: Image.Image) -> str:
-    # 数字とコロンだけ認識
     config = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789:"
     return pytesseract.image_to_string(img, lang="eng", config=config)
 
@@ -73,46 +84,6 @@ def normalize_time_format(line: str):
         return m2.group(1)
     return None
 
-# ===== サーバー番号/駐騎場番号抽出 =====
-def extract_server_id(text):
-    m = re.search(r'\[s?(\d{2,4})\]', text, re.IGNORECASE)
-    return m.group(1) if m else None
-
-def extract_station_numbers(text: str):
-    nums = re.findall(r'駐.*?場\s*(\d+)', text)
-    valid = []
-    for n in nums:
-        if n.isdigit():
-            num = int(n)
-            if 1 <= num <= 12:
-                valid.append(str(num))
-    return valid
-
-# ===== 免戦中行 → 再OCRで時間だけ正確に読む =====
-def extract_times_from_image(center_img):
-    rough_text = ocr_text(center_img, psm=4)
-    lines = rough_text.splitlines()
-    times = []
-
-    if len(lines) == 0:
-        return []
-
-    # 1行あたりの高さ推定
-    line_h = center_img.height // max(len(lines),1)
-
-    for i, line in enumerate(lines):
-        if "免戦" in line or "院戦" in line or "免" in line:
-            # この行の高さだけ再OCR（数字限定モード）
-            y1 = i * line_h
-            y2 = (i+1) * line_h
-            line_img = center_img.crop((0, y1, center_img.width, y2))
-            raw_time = ocr_time_line(line_img)
-            t = normalize_time_format(raw_time)
-            if t:
-                times.append(t)
-
-    return times[:3]  # 最大3件
-
 # ===== Discord BOTイベント =====
 @client.event
 async def on_ready():
@@ -124,77 +95,30 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（中央領域狭め＆画像送信版）")
+        await message.channel.send("✅ BOT動いてるよ！（6分割プレビュー版）")
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、解析中…")
+        await message.channel.send("📥 画像を受け取りました、中央OCR領域を6分割して確認します…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
             img = Image.open(BytesIO(img_data))
 
-            # === 基準時間 ===
-            base_img = preprocess_image(crop_top_right(img))
-            base_text = ocr_text(base_img, psm=7)  # 1行優先
-            base_time = normalize_time_format(base_text)
-
-            # === 中央OCR領域（狭め） ===
+            # === 中央OCR領域 ===
             center_raw = crop_center_area(img)
-            # 確認用に切り出した画像を送信
-            buf = BytesIO()
-            center_raw.save(buf, format="PNG")
-            buf.seek(0)
-            await message.channel.send("📸 中央OCRの切り出し画像:", file=discord.File(buf, "center_area.png"))
 
-            # === 中央OCR前処理 & テキスト ===
+            # 6分割プレビュー
+            parts = split_preview(center_raw, parts=6)
+            for idx, p_img in enumerate(parts):
+                buf = BytesIO()
+                p_img.save(buf, format="PNG")
+                buf.seek(0)
+                await message.channel.send(f"📸 中央分割プレビュー {idx+1}/6", file=discord.File(buf, f"center_part_{idx+1}.png"))
+
+            # デバッグ用にOCRも試す
             center_img = preprocess_image(center_raw)
-            center_text_raw = ocr_text(center_img, psm=4)  # ブロック解析
-            center_text = clean_text(center_text_raw)
-
-            # デバッグ出力
-            await message.channel.send(f"⏫ 基準時間OCR:\n```\n{base_text}\n```")
-            await message.channel.send(f"📄 中央OCR結果:\n```\n{center_text_raw}\n```")
-
-            # サーバー番号
-            server_id = extract_server_id(center_text)
-
-            # 駐騎場番号（最大3件）
-            station_numbers = extract_station_numbers(center_text)[:3]
-
-            # === 免戦中行だけ再OCR（数字限定モードで時間正確化） ===
-            immune_times = extract_times_from_image(center_img)
-
-            # ===== データ数補正 =====
-            if not base_time:
-                await message.channel.send("⚠️ 基準時間が読めませんでした")
-                return
-
-            if not server_id:
-                await message.channel.send("⚠️ サーバー番号が読めませんでした")
-                return
-
-            if len(station_numbers) != len(immune_times):
-                await message.channel.send(
-                    f"⚠️ データ数不一致\n"
-                    f"基準時間: {base_time}\n"
-                    f"サーバー: {server_id}\n"
-                    f"駐騎場: {station_numbers}\n"
-                    f"免戦: {immune_times}\n"
-                    f"→ 不足分は仮番号で補います"
-                )
-                while len(station_numbers) < len(immune_times):
-                    station_numbers.append("?")
-
-            # === 計算して最終結果 ===
-            base_dt = datetime.strptime(base_time,"%H:%M:%S")
-            results=[]
-            for i,t in enumerate(immune_times):
-                hms = list(map(int, t.split(":")))
-                while len(hms)<3: hms.append(0)
-                end_dt = (base_dt + timedelta(hours=hms[0], minutes=hms[1], seconds=hms[2])).time()
-                results.append(f"越域駐騎場{station_numbers[i]}({server_id}) {end_dt.strftime('%H:%M:%S')}")
-
-            await message.channel.send("\n".join(results) if results else "⚠️ 読み取り結果なし")
+            center_text_raw = ocr_text(center_img, psm=4)
+            await message.channel.send(f"📄 中央OCR結果(全体):\n```\n{center_text_raw}\n```")
 
 client.run(TOKEN)

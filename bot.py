@@ -1,6 +1,7 @@
 import os
 import discord
 from PIL import Image
+import pytesseract
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -8,45 +9,70 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# === サーバー番号は完璧なので現状維持 ===
+# === サーバー番号 ===
 server_box = (420, 970, 870, 1040)
 
-# === 駐騎場番号＋免戦時間 ===
+# === 駐騎場（番号＋免戦時間） ===
 base_y = 1095             # 行1の基準位置
-row_height = 310          # 行間はそのまま
-full_box_x = (270, 630)   # 横幅は270～630のまま
+row_height = 310          # 行間
+full_box_x = (270, 630)   # 横幅
+crop_height = 120         # 下に10px伸ばした高さ
 
-def crop_debug_images(img_path):
+def ocr_image(image_path):
+    """OCRで文字読み取り"""
+    text = pytesseract.image_to_string(Image.open(image_path), lang="eng+osd+jpn")
+    return text.strip()
+
+def parse_line_text(text):
+    """OCR結果から番号＆免戦時間抽出（ざっくり）"""
+    # 数字だけの駐騎場番号を探す
+    import re
+    num_match = re.search(r"\d{1,2}", text)
+    number = num_match.group(0) if num_match else "?"
+    
+    # 時間フォーマットを探す
+    time_match = re.search(r"\d{2}:\d{2}:\d{2}", text)
+    if time_match:
+        time_val = time_match.group(0)
+    else:
+        # 免戦時間が無ければ「開戦済」
+        time_val = "開戦済"
+    
+    return number, time_val
+
+def crop_and_ocr(img_path):
     img = Image.open(img_path)
     img_w, img_h = img.size
     print(f"画像サイズ: {img_w} x {img_h}")
 
-    cropped_paths = []
+    # ✅ サーバー番号切り出し
+    server_crop = "/tmp/debug_server.png"
+    img.crop(server_box).save(server_crop)
+    server_text = ocr_image(server_crop)
 
-    # ✅ サーバー番号はそのまま
-    server_crop_path = "/tmp/debug_server.png"
-    img.crop(server_box).save(server_crop_path)
-
-    # ✅ 駐騎場番号＋免戦時間（行2さらに上、行3はもっと上）＋下方向に10px伸ばす
+    # ✅ 駐騎場3行OCR
+    lines = []
     for i in range(3):
         y1 = base_y + i * row_height
 
-        # 行2だけ合計100px上げる
+        # 行2だけ100px上補正
         if i == 1:
             y1 -= 100
 
-        # 行3だけ200px上げる
+        # 行3だけ200px上補正
         if i == 2:
             y1 -= 200
 
-        # 高さを10px追加
-        y2 = y1 + 110 + 10
+        y2 = y1 + crop_height
+        crop_path = f"/tmp/debug_full_{i+1}.png"
+        img.crop((full_box_x[0], y1, full_box_x[1], y2)).save(crop_path)
 
-        full_crop_path = f"/tmp/debug_full_{i+1}.png"
-        img.crop((full_box_x[0], y1, full_box_x[1], y2)).save(full_crop_path)
-        cropped_paths.append(full_crop_path)
+        # OCR解析
+        raw_text = ocr_image(crop_path)
+        number, time_val = parse_line_text(raw_text)
+        lines.append((number, time_val))
 
-    return server_crop_path, cropped_paths
+    return server_text, lines
 
 @client.event
 async def on_message(message):
@@ -54,24 +80,19 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send(
-            "✅ 画像を受け取りました！行2はさらに100px上、行3は200px上補正＆下に10px伸ばして切り出します…"
-        )
-        
+        await message.channel.send("✅ 画像受信！OCRでサーバー番号＋駐騎場情報を解析します…")
+
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"
             await attachment.save(file_path)
 
-            server_img, crops = crop_debug_images(file_path)
+            server_text, lines = crop_and_ocr(file_path)
 
-            # サーバー番号画像（そのまま）
-            await message.channel.send("サーバー番号の切り出し結果", file=discord.File(server_img))
+            # OCR結果フォーマット
+            result_msg = f"**サーバー番号:** {server_text}\n\n"
+            for idx, (num, tval) in enumerate(lines, start=1):
+                result_msg += f"行{idx} → 駐騎場番号: {num}, {tval}\n"
 
-            # 駐騎場番号＋免戦時間（下10px伸ばし版）
-            for idx, full_img in enumerate(crops, start=1):
-                await message.channel.send(
-                    f"行{idx} の切り出し結果（番号＋免戦時間）",
-                    file=discord.File(full_img, filename=f"行{idx}_番号_免戦時間.png")
-                )
+            await message.channel.send(result_msg)
 
 client.run(TOKEN)

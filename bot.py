@@ -8,7 +8,6 @@ import os
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# OCRモード: 1行単位の解析に変更
 OCR_CONFIG = "--oem 3 --psm 7"
 
 intents = discord.Intents.default()
@@ -17,25 +16,24 @@ client = discord.Client(intents=intents)
 
 def preprocess_image(img: Image.Image) -> Image.Image:
     """OCR前に画像拡大＋補正"""
-    # 文字が小さい場合は2倍リサイズで精度UP
-    img = img.resize((img.width * 2, img.height * 2))
-    img = img.convert("L")  # グレースケール
-    img = ImageEnhance.Contrast(img).enhance(2.0)  # コントラスト強調
-    img = img.filter(ImageFilter.SHARPEN)  # シャープ化
+    img = img.resize((img.width * 2, img.height * 2))  # 2倍拡大
+    img = img.convert("L")
+    img = ImageEnhance.Contrast(img).enhance(2.0)
+    img = img.filter(ImageFilter.SHARPEN)
     return img
 
 def crop_top_right(img: Image.Image) -> Image.Image:
-    """右上(基準時間)だけ切り出し"""
+    """右上(基準時間) → 少し下の領域"""
     w, h = img.size
-    return img.crop((w * 0.75, h * 0.0, w * 0.98, h * 0.1))
+    # 横幅75%〜98%、高さ5%〜15%
+    return img.crop((w * 0.75, h * 0.05, w * 0.98, h * 0.15))
 
 def crop_center_area(img: Image.Image) -> Image.Image:
-    """中央領域を広めに切り出し（高さ30～80%）"""
+    """中央OCR → 高さ40〜65%に狭める"""
     w, h = img.size
-    return img.crop((w * 0.05, h * 0.3, w * 0.95, h * 0.8))
+    return img.crop((w * 0.1, h * 0.4, w * 0.9, h * 0.65))
 
 def clean_ocr_text(text: str) -> str:
-    """不要な文章を削除・補正"""
     text = text.replace("を奪取しました", "")
     text = text.replace("奪取撃破数", "")
     text = text.replace("警備撃破数", "")
@@ -44,12 +42,10 @@ def clean_ocr_text(text: str) -> str:
     return text
 
 def extract_base_time(text: str) -> str:
-    """右上の基準時間(HH:MM:SS)"""
     m = re.search(r'([0-2]?\d:[0-5]\d:[0-5]\d)', text)
     return m.group(1) if m else None
 
 def extract_server_id(text: str) -> str:
-    """サーバー番号は最後の1～999を採用"""
     server_matches = re.findall(r'\[s\d{2,4}\]', text, re.IGNORECASE)
     valid_servers = []
     for s in server_matches:
@@ -59,12 +55,10 @@ def extract_server_id(text: str) -> str:
     return str(valid_servers[-1]) if valid_servers else "???"
 
 def extract_station_numbers(text: str):
-    """駐騎場番号（1～12のみ有効）"""
     raw_stations = re.findall(r'駐騎場\s*(\d+)', text)
     return [n for n in dict.fromkeys(raw_stations) if 1 <= int(n) <= 12]
 
 def extract_times(text: str):
-    """免戦時間（HH:MM:SS / HH:MM / MM:SS対応、6時間以内だけ有効）"""
     raw_times = re.findall(r'([0-5]?\d:[0-5]\d(?::[0-5]\d)?)', text)
     immune_times = []
     for t in raw_times:
@@ -74,15 +68,12 @@ def extract_times(text: str):
         elif len(parts) == 2:
             first, second = map(int, parts)
             if first < 6:
-                # HH:MM → 秒補完
                 h, m, s = first, second, 0
             else:
-                # MM:SS → 時間0補完
                 h, m, s = 0, first, second
             t = f"{h:02}:{m:02}:{s:02}"
         else:
             continue
-
         if 0 <= h <= 6:
             immune_times.append(t)
     return immune_times
@@ -101,7 +92,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、OCR精度テスト中…")
+        await message.channel.send("📥 画像を受け取りました、OCRデバッグ中…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
@@ -111,15 +102,13 @@ async def on_message(message):
             base_img = preprocess_image(crop_top_right(img))
             base_img.save("/tmp/debug_base.png")
             await message.channel.send(file=discord.File("/tmp/debug_base.png", "base_debug.png"))
-
             base_text = pytesseract.image_to_string(base_img, lang="eng", config="--psm 7")
             base_time = extract_base_time(base_text)
 
-            # === 中央OCR（駐騎場情報・広範囲） ===
+            # === 中央OCR（駐騎場情報） ===
             center_img = preprocess_image(crop_center_area(img))
             center_img.save("/tmp/debug_center.png")
             await message.channel.send(file=discord.File("/tmp/debug_center.png", "center_debug.png"))
-
             center_text = clean_ocr_text(
                 pytesseract.image_to_string(center_img, lang="jpn", config=OCR_CONFIG)
             )
@@ -127,17 +116,14 @@ async def on_message(message):
             await message.channel.send(f"⏫ 基準時間OCR:\n```\n{base_text}\n```")
             await message.channel.send(f"📄 中央OCR結果:\n```\n{center_text}\n```")
 
-            # サーバー番号 / 駐騎場番号 / 免戦時間抽出
             server_id = extract_server_id(center_text)
             station_numbers = extract_station_numbers(center_text)
             immune_times = extract_times(center_text)
 
-            # 基準時間が読めなかった場合はエラー
             if not base_time:
                 await message.channel.send("⚠️ 基準時間が右上から読み取れませんでした")
                 return
 
-            # データ数が一致しない場合は警告
             if len(station_numbers) != len(immune_times):
                 await message.channel.send(
                     f"⚠️ データ数不一致\n"
@@ -148,7 +134,6 @@ async def on_message(message):
                 )
                 return
 
-            # === 計算：基準時間 + 免戦時間 ===
             base_dt = datetime.strptime(base_time, "%H:%M:%S")
             results = []
             for idx, t in enumerate(immune_times):

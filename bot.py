@@ -1,8 +1,10 @@
+import os
 import discord
 from PIL import Image
 import pytesseract
 
-TOKEN = "YOUR_DISCORD_BOT_TOKEN"
+# ✅ トークンは環境変数から取得
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True

@@ -8,7 +8,6 @@ import os
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# OCR設定（精度重視）
 OCR_CONFIG = "--oem 1 --psm 6"
 
 intents = discord.Intents.default()
@@ -17,11 +16,11 @@ client = discord.Client(intents=intents)
 
 def preprocess_image(img: Image.Image) -> Image.Image:
     """OCR前に画像補正（グレースケール＋コントラスト強調＋二値化）"""
-    img = img.convert("L")  # グレースケール
+    img = img.convert("L")
     enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(2.0)  # コントラストUP
-    img = img.filter(ImageFilter.SHARPEN)  # シャープ化
-    img = img.point(lambda x: 0 if x < 128 else 255, '1')  # 二値化
+    img = enhancer.enhance(2.0)
+    img = img.filter(ImageFilter.SHARPEN)
+    img = img.point(lambda x: 0 if x < 128 else 255, '1')
     return img
 
 @client.event
@@ -44,48 +43,56 @@ async def on_message(message):
             img_data = await attachment.read()
             img = Image.open(BytesIO(img_data))
 
-            # OCR前補正
             img_processed = preprocess_image(img)
 
-            # 日本語OCR（駐騎場番号・サーバー番号用）
             text_jpn = pytesseract.image_to_string(img_processed, lang="jpn", config=OCR_CONFIG)
-            # 英数字OCR（時間抽出用）
             text_eng = pytesseract.image_to_string(img_processed, lang="eng", config=OCR_CONFIG)
 
-            # デバッグ結果
             await message.channel.send(f"📄 日本語OCR結果:\n```\n{text_jpn}\n```")
             await message.channel.send(f"📄 英数字OCR結果:\n```\n{text_eng}\n```")
 
-            # === サーバー番号抽出（1〜999だけ有効） ===
+            # === サーバー番号（最後の1～999を採用） ===
             server_matches = re.findall(r'\[s\d{2,4}\]', text_jpn, re.IGNORECASE)
             valid_servers = []
             for s in server_matches:
                 num = int(re.search(r'\d{2,4}', s).group())
-                # サーバー番号は1〜999まで有効（4桁は除外）
                 if 1 <= num <= 999:
                     valid_servers.append(num)
+            server_id = str(valid_servers[-1]) if valid_servers else "???"
 
-            if valid_servers:
-                server_id = str(valid_servers[-1])  # ✅ 最後の有効な3桁番号
-            else:
-                server_id = "???"
-
-            # === 駐騎場番号抽出（1〜12のみ許可 & 重複削除） ===
+            # === 駐騎場番号（1～12のみ有効） ===
             raw_stations = re.findall(r'駐[騎肝椅馬]\s*場\s*(\d+)', text_jpn)
             station_numbers = [
                 n for n in dict.fromkeys(raw_stations)
                 if n.isdigit() and 1 <= int(n) <= 12
             ]
 
-            # === 時間抽出 ===
-            raw_times = re.findall(r'([0-2]?\d:[0-5]\d:[0-5]\d)', text_eng + text_jpn)
-            # 免戦時間は最大06:00:00まで許可
-            immune_times = [
-                t for t in raw_times
-                if t and 0 <= int(t.split(':')[0]) <= 6
-            ]
+            # === 免戦時間抽出 (HH:MM:SS / HH:MM / MM:SS 全対応) ===
+            raw_times = re.findall(r'([0-5]?\d:[0-5]\d(?::[0-5]\d)?)', text_eng + text_jpn)
+            immune_times = []
+            for t in raw_times:
+                parts = t.split(':')
 
-            # 免戦時間が駐騎場番号と一致しなければエラー
+                if len(parts) == 3:
+                    # HH:MM:SS → そのまま
+                    h, m, s = map(int, parts)
+                elif len(parts) == 2:
+                    first, second = map(int, parts)
+                    if first < 6:  
+                        # HH:MM (時間<6なら有効)
+                        h, m, s = first, second, 0
+                    else:
+                        # MM:SS と判断 → 時間は0
+                        h, m, s = 0, first, second
+                    t = f"{h:02}:{m:02}:{s:02}"
+                else:
+                    continue  # 不正フォーマットは除外
+
+                # 免戦時間は0～6時間だけ有効
+                if 0 <= h <= 6:
+                    immune_times.append(t)
+
+            # === データ整合性チェック ===
             if len(station_numbers) != len(immune_times):
                 await message.channel.send(
                     f"⚠️ データ数不一致\n"
@@ -95,12 +102,11 @@ async def on_message(message):
                 )
                 return
 
-            # 基準時間が必要ならユーザー指定が前提なのでここでは免戦時間のみ対応
+            # === 1対1対応で計算結果作成 ===
             results = []
             for idx, t in enumerate(immune_times):
                 station_name = f"越域駐騎場{station_numbers[idx]}"
                 h, m, s = map(int, t.split(":"))
-                # 基準時間が無いので免戦時間そのまま表示（ユーザー指定モードでもOK）
                 results.append(f"{station_name}({server_id}) +{h:02}:{m:02}:{s:02}")
 
             if results:

@@ -11,10 +11,10 @@ client = discord.Client(intents=intents)
 # === サーバー番号は完璧なので現状維持 ===
 server_box = (420, 970, 870, 1040)
 
-# === 駐騎場番号＋免戦時間（右をさらに100削る） ===
-base_y = 1095            # 下に5px補正
-row_height = 310         # 行間はそのまま
-full_box_x = (270, 660)  # 右を100px削減した範囲
+# === 駐騎場番号＋免戦時間 ===
+base_y = 1095             # 下に5px補正
+row_height = 310          # 行間はそのまま
+full_box_x = (270, 630)   # 右側をさらに30px削減
 
 def crop_debug_images(img_path):
     img = Image.open(img_path)
@@ -27,9 +27,14 @@ def crop_debug_images(img_path):
     server_crop_path = "/tmp/debug_server.png"
     img.crop(server_box).save(server_crop_path)
 
-    # ✅ 駐騎場番号＋免戦時間（さらに右を削減）
+    # ✅ 駐騎場番号＋免戦時間
     for i in range(3):
         y1 = base_y + i * row_height
+
+        # 2枚目（行2）はさらに50px上げる
+        if i == 1:
+            y1 -= 50
+
         y2 = y1 + 110
 
         full_crop_path = f"/tmp/debug_full_{i+1}.png"
@@ -44,7 +49,9 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("✅ 画像を受け取りました！駐騎場番号＋免戦時間の右側をさらに100px削って切り出します…")
+        await message.channel.send(
+            "✅ 画像を受け取りました！右側を30px削減＋2枚目だけ上に50pxずらして切り出します…"
+        )
         
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"
@@ -55,7 +62,7 @@ async def on_message(message):
             # サーバー番号画像（そのまま）
             await message.channel.send("サーバー番号の切り出し結果", file=discord.File(server_img))
 
-            # 駐騎場番号＋免戦時間（右100削減）
+            # 駐騎場番号＋免戦時間（右30削減＋2枚目上50補正）
             for idx, full_img in enumerate(crops, start=1):
                 await message.channel.send(
                     f"行{idx} の切り出し結果（番号＋免戦時間）",

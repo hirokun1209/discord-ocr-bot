@@ -1,10 +1,8 @@
-import discord
-import easyocr
-from PIL import Image
+import discord, pytesseract
+from PIL import Image, ImageEnhance, ImageFilter
 from io import BytesIO
-import re
+import re, os
 from datetime import datetime, timedelta
-import os
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -12,26 +10,39 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# === EasyOCRリーダー ===
-reader = easyocr.Reader(['ja', 'en'])
+# ===== 前処理 =====
+def preprocess_image(img: Image.Image) -> Image.Image:
+    # 4倍拡大
+    img = img.resize((img.width * 4, img.height * 4))
+    # グレースケール
+    img = img.convert("L")
+    # ノイズ軽減
+    img = img.filter(ImageFilter.MedianFilter(size=3))
+    # コントラスト強化
+    img = ImageEnhance.Contrast(img).enhance(3.0)
+    # 白黒2値化
+    img = img.point(lambda p: 255 if p > 150 else 0)
+    # シャープ化
+    img = img.filter(ImageFilter.SHARPEN)
+    return img
 
-# === 切り出し範囲 ===
+# ===== 位置切り出し =====
 def crop_top_right(img):
-    """右上の基準時間 → 縦5〜15%、横70〜99%"""
-    w, h = img.size
-    return img.crop((w * 0.70, h * 0.05, w * 0.99, h * 0.15))
+    w,h = img.size
+    return img.crop((w*0.70, h*0.05, w*0.99, h*0.15))
 
 def crop_center_area(img):
-    """中央OCR → 縦35〜70%、横10〜50%"""
-    w, h = img.size
-    return img.crop((w * 0.1, h * 0.35, w * 0.5, h * 0.70))
+    w,h = img.size
+    return img.crop((w*0.1, h*0.35, w*0.5, h*0.70))
+
+# ===== OCR & 抽出 =====
+def ocr_text(img: Image.Image, psm=11) -> str:
+    config = f"--oem 3 --psm {psm}"
+    return pytesseract.image_to_string(img, lang="jpn+eng", config=config)
 
 def clean_text(text):
-    return (text.replace("駐聴場","駐騎場")
-                .replace("駐脱場","駐騎場")
-                .replace("越域駐豚場","越域駐騎場"))
+    return text.replace("駐聴場","駐騎場").replace("駐脱場","駐騎場")
 
-# === OCRから抽出 ===
 def extract_base_time(text):
     m = re.search(r'([0-2]?\d:[0-5]\d:[0-5]\d)', text)
     return m.group(1) if m else None
@@ -56,43 +67,30 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（EasyOCR版）")
+        await message.channel.send("✅ BOT動いてるよ！（Tesseract軽量版）")
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、EasyOCRで解析中…")
+        await message.channel.send("📥 画像を受け取りました、解析中…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
             img = Image.open(BytesIO(img_data))
 
-            # === 基準時間OCR ===
-            base_img = crop_top_right(img)
-            base_img.save("/tmp/debug_base.png")
-            await message.channel.send(file=discord.File("/tmp/debug_base.png", "base_debug.png"))
-
-            base_results = reader.readtext(base_img, detail=0)
-            base_text = " ".join(base_results)
+            # === 基準時間 ===
+            base_img = preprocess_image(crop_top_right(img))
+            base_text = ocr_text(base_img, psm=7)  # 1行想定
             base_time = extract_base_time(base_text)
 
             # === 中央OCR ===
-            center_img = crop_center_area(img)
-            center_img.save("/tmp/debug_center.png")
-            await message.channel.send(file=discord.File("/tmp/debug_center.png", "center_debug.png"))
-
-            center_results = reader.readtext(center_img, detail=0)
-            center_text_raw = " ".join(center_results)
+            center_img = preprocess_image(crop_center_area(img))
+            center_text_raw = ocr_text(center_img, psm=11) # スパーステキストモード
             center_text = clean_text(center_text_raw)
 
-            # === 駐騎場行＋下2行分まとめて処理 ===
-            lines = center_text.split()
-            paired_text = " ".join(lines)
+            # デバッグ出力
+            await message.channel.send(f"⏫ 基準時間OCR:\n```\n{base_text}\n```")
+            await message.channel.send(f"📄 中央OCR結果:\n```\n{center_text_raw}\n```")
 
-            # デバッグ表示
-            await message.channel.send(f"⏫ 基準時間OCR(EasyOCR):\n```\n{base_text}\n```")
-            await message.channel.send(f"📄 中央OCR結果(EasyOCR):\n```\n{center_text_raw}\n```")
-
-            # サーバー番号 / 駐騎場番号 / 免戦時間抽出
             server_id = extract_server_id(center_text)
             station_numbers = extract_station_numbers(center_text)
             immune_times = extract_times(center_text)
@@ -115,13 +113,11 @@ async def on_message(message):
                 )
                 return
 
-            # === 計算 ===
-            base_dt = datetime.strptime(base_time, "%H:%M:%S")
-            results = []
-            for i, t in enumerate(immune_times):
+            base_dt = datetime.strptime(base_time,"%H:%M:%S")
+            results=[]
+            for i,t in enumerate(immune_times):
                 hms = list(map(int, t.split(":")))
-                while len(hms) < 3:
-                    hms.append(0)
+                while len(hms)<3: hms.append(0)
                 end_dt = (base_dt + timedelta(hours=hms[0], minutes=hms[1], seconds=hms[2])).time()
                 results.append(f"越域駐騎場{station_numbers[i]}({server_id}) {end_dt.strftime('%H:%M:%S')}")
 

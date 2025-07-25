@@ -8,19 +8,20 @@ import os
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-OCR_CONFIG = "--oem 3 --psm 6"
+# OCRモード: 1行単位の解析に変更
+OCR_CONFIG = "--oem 3 --psm 7"
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
 def preprocess_image(img: Image.Image) -> Image.Image:
-    """OCR前に画像補正（グレースケール＋コントラスト強調＋二値化）"""
-    img = img.convert("L")
-    enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(2.0)
-    img = img.filter(ImageFilter.SHARPEN)
-    img = img.point(lambda x: 0 if x < 128 else 255, '1')
+    """OCR前に画像拡大＋補正"""
+    # 文字が小さい場合は2倍リサイズで精度UP
+    img = img.resize((img.width * 2, img.height * 2))
+    img = img.convert("L")  # グレースケール
+    img = ImageEnhance.Contrast(img).enhance(2.0)  # コントラスト強調
+    img = img.filter(ImageFilter.SHARPEN)  # シャープ化
     return img
 
 def crop_top_right(img: Image.Image) -> Image.Image:
@@ -29,12 +30,12 @@ def crop_top_right(img: Image.Image) -> Image.Image:
     return img.crop((w * 0.75, h * 0.0, w * 0.98, h * 0.1))
 
 def crop_center_area(img: Image.Image) -> Image.Image:
-    """画面中央付近（高さ40～70%）だけ切り出す"""
+    """中央領域を広めに切り出し（高さ30～80%）"""
     w, h = img.size
-    return img.crop((w * 0.1, h * 0.4, w * 0.9, h * 0.7))
+    return img.crop((w * 0.05, h * 0.3, w * 0.95, h * 0.8))
 
 def clean_ocr_text(text: str) -> str:
-    """不要な文章を削除"""
+    """不要な文章を削除・補正"""
     text = text.replace("を奪取しました", "")
     text = text.replace("奪取撃破数", "")
     text = text.replace("警備撃破数", "")
@@ -100,19 +101,25 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、OCR処理中…")
+        await message.channel.send("📥 画像を受け取りました、OCR精度テスト中…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
             img = Image.open(BytesIO(img_data))
 
             # === 基準時間OCR（右上） ===
-            base_img = crop_top_right(preprocess_image(img))
+            base_img = preprocess_image(crop_top_right(img))
+            base_img.save("/tmp/debug_base.png")
+            await message.channel.send(file=discord.File("/tmp/debug_base.png", "base_debug.png"))
+
             base_text = pytesseract.image_to_string(base_img, lang="eng", config="--psm 7")
             base_time = extract_base_time(base_text)
 
-            # === 中央OCR（駐騎場情報） ===
-            center_img = crop_center_area(preprocess_image(img))
+            # === 中央OCR（駐騎場情報・広範囲） ===
+            center_img = preprocess_image(crop_center_area(img))
+            center_img.save("/tmp/debug_center.png")
+            await message.channel.send(file=discord.File("/tmp/debug_center.png", "center_debug.png"))
+
             center_text = clean_ocr_text(
                 pytesseract.image_to_string(center_img, lang="jpn", config=OCR_CONFIG)
             )

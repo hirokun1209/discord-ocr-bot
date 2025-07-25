@@ -29,7 +29,6 @@ def crop_top_right(img):
 
 def crop_center_area(img):
     w,h = img.size
-    # 領域はそのまま
     return img.crop((w*0.05, h*0.35, w*0.55, h*0.70))
 
 # ===== OCR呼び出し =====
@@ -106,7 +105,7 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（時間補正版）")
+        await message.channel.send("✅ BOT動いてるよ！（最大3件補正版）")
         return
 
     if message.attachments:
@@ -133,11 +132,11 @@ async def on_message(message):
             # サーバー番号
             server_id = extract_server_id(center_text)
 
-            # 駐騎場番号
-            station_numbers = extract_station_numbers(center_text)
+            # 駐騎場番号（最大3件）
+            station_numbers = extract_station_numbers(center_text)[:3]
 
-            # 免戦時間 → 免戦中行からのみ抽出
-            immune_times = extract_times_near_keyword(center_text)
+            # 免戦時間 → 免戦中行からのみ抽出（最大3件）
+            immune_times = extract_times_near_keyword(center_text)[:3]
 
             # ===== 時間補正後処理 =====
             if not base_time:
@@ -148,6 +147,7 @@ async def on_message(message):
                 await message.channel.send("⚠️ サーバー番号が読めませんでした")
                 return
 
+            # 足りない分は?で補完
             if len(station_numbers) != len(immune_times):
                 await message.channel.send(
                     f"⚠️ データ数不一致\n"
@@ -160,6 +160,7 @@ async def on_message(message):
                 while len(station_numbers) < len(immune_times):
                     station_numbers.append("?")
 
+            # === 結果計算 ===
             base_dt = datetime.strptime(base_time,"%H:%M:%S")
             results=[]
             for i,t in enumerate(immune_times):

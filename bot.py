@@ -11,20 +11,15 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# ===== 前処理（OCR精度向上） =====
+# ===== 前処理 =====
 def preprocess_image(img: Image.Image) -> Image.Image:
-    # 4倍拡大
+    # OCR精度向上のため拡大+補正
     img = img.resize((img.width * 4, img.height * 4))
-    # グレースケール
-    img = img.convert("L")
-    # ノイズ除去
-    img = img.filter(ImageFilter.MedianFilter(size=3))
-    # コントラスト強化
-    img = ImageEnhance.Contrast(img).enhance(3.0)
-    # 白黒化
-    img = img.point(lambda p: 255 if p > 150 else 0)
-    # シャープ化
-    img = img.filter(ImageFilter.SHARPEN)
+    img = img.convert("L")  # グレースケール
+    img = img.filter(ImageFilter.MedianFilter(size=3))  # ノイズ除去
+    img = ImageEnhance.Contrast(img).enhance(3.0)       # コントラスト強化
+    img = img.point(lambda p: 255 if p > 150 else 0)    # 2値化
+    img = img.filter(ImageFilter.SHARPEN)               # シャープ化
     return img
 
 # ===== 画面位置切り出し =====
@@ -34,10 +29,12 @@ def crop_top_right(img):
 
 def crop_center_area(img):
     w,h = img.size
-    return img.crop((w*0.1, h*0.35, w*0.5, h*0.70))
+    # ←ここを左右広げる（前:0.1~0.5 → 今回:0.05~0.55）
+    return img.crop((w*0.05, h*0.35, w*0.55, h*0.70))
 
 # ===== OCR呼び出し =====
-def ocr_text(img: Image.Image, psm=6) -> str:
+def ocr_text(img: Image.Image, psm=4) -> str:
+    # psm4 → ブロック解析優先（ゲームUI向け）
     config = f"--oem 3 --psm {psm}"
     return pytesseract.image_to_string(img, lang="jpn+eng", config=config)
 
@@ -48,10 +45,12 @@ def clean_text(text: str) -> str:
         "駐駒場": "駐騎場",
         "駐聴場": "駐騎場",
         "駐脱場": "駐騎場",
+        "駐場": "駐騎場",      # 騎が抜けたパターン補正
+        "駐域場": "駐騎場",    # OCR誤認補正
         "束駐": "越域駐",
         "Ai束": "越域駐",
         "越域駐駒場": "越域駐騎場",
-        "駐騎場O": "駐騎場0",   # O→0
+        "駐騎場O": "駐騎場0",  # O→0補正
     }
     for k, v in replacements.items():
         text = text.replace(k, v)
@@ -90,7 +89,7 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（Tesseract補正版）")
+        await message.channel.send("✅ BOT動いてるよ！（補正＆領域拡大＆psm4版）")
         return
 
     if message.attachments:
@@ -107,7 +106,7 @@ async def on_message(message):
 
             # === 中央OCR ===
             center_img = preprocess_image(crop_center_area(img))
-            center_text_raw = ocr_text(center_img, psm=6)  # 文章ブロック
+            center_text_raw = ocr_text(center_img, psm=4)  # ブロック解析
             center_text = clean_text(center_text_raw)
 
             # デバッグ出力

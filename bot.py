@@ -9,33 +9,33 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# ===== 中央領域切り出し（固定） =====
+# ===== 中央領域切り出し =====
 def crop_center_area(img):
     w, h = img.size
     # 中央部分：35%〜65%の範囲
     return img.crop((w*0.05, h*0.35, w*0.55, h*0.65))
 
-# ===== 分割関数（1枚目さらに小さい1/8、残りを等分） =====
-def split_preview_smaller_top(center_raw):
+# ===== 分割関数（1枚目さらに小さく＋2枚目以降小さめ＆余り切り捨て） =====
+def split_preview_smaller_all(center_raw):
     w, h = center_raw.size
     parts = []
 
-    # Part1 = さらに小さめ（1/8）
+    # 1枚目 = 1/8 高さ
     part1_h = h // 8
-    part1 = center_raw.crop((0, 0, w, part1_h))
-    parts.append(part1)
+    parts.append(center_raw.crop((0, 0, w, part1_h)))
 
-    # 残り7/8を3等分
+    # 残り7/8
     remaining_height = h - part1_h
-    block_h = remaining_height // 3
 
+    # 残りを4分割 → そのうち3枚だけ使う
+    block_h = remaining_height // 4
     y_start = part1_h
     for _ in range(3):
         y_end = y_start + block_h
-        part = center_raw.crop((0, y_start, w, min(y_end, h)))
-        parts.append(part)
+        parts.append(center_raw.crop((0, y_start, w, y_end)))
         y_start = y_end
 
+    # 余った下側は切り捨てる
     return parts  # 合計4枚
 
 # ===== Discord BOTイベント =====
@@ -49,7 +49,7 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（1枚目さらに小さく＋残り等分プレビュー版）")
+        await message.channel.send("✅ BOT動いてるよ！（1枚目＋2枚目以降小さめ＆余り切り捨て版）")
         return
 
     if message.attachments:
@@ -63,7 +63,7 @@ async def on_message(message):
             center_raw = crop_center_area(img)
 
             # === 分割プレビュー生成 ===
-            parts = split_preview_smaller_top(center_raw)
+            parts = split_preview_smaller_all(center_raw)
             for idx, p_img in enumerate(parts):
                 buf = BytesIO()
                 p_img.save(buf, format="PNG")

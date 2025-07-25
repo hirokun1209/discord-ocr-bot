@@ -29,7 +29,8 @@ def crop_top_right(img):
 
 def crop_center_area(img):
     w,h = img.size
-    return img.crop((w*0.05, h*0.35, w*0.55, h*0.70))
+    # ←縦を上下+5%拡張（30%〜75%）
+    return img.crop((w*0.05, h*0.30, w*0.55, h*0.75))
 
 # ===== OCR共通 =====
 def ocr_text(img: Image.Image, psm=4) -> str:
@@ -49,12 +50,12 @@ def clean_text(text: str) -> str:
         "駐駒場": "駐騎場",
         "駐聴場": "駐騎場",
         "駐脱場": "駐騎場",
-        "駐場": "駐騎場",      # 騎が抜けたパターン補正
-        "駐域場": "駐騎場",    # OCR誤認補正
+        "駐場": "駐騎場",
+        "駐域場": "駐騎場",
         "束駐": "越域駐",
         "Ai束": "越域駐",
         "越域駐駒場": "越域駐騎場",
-        "駐騎場O": "駐騎場0",  # O→0補正
+        "駐騎場O": "駐騎場0",
     }
     for k, v in replacements.items():
         text = text.replace(k, v)
@@ -83,7 +84,7 @@ def extract_station_numbers(text: str):
     for n in nums:
         if n.isdigit():
             num = int(n)
-            if 1 <= num <= 12:  # 1～12だけ有効
+            if 1 <= num <= 12:
                 valid.append(str(num))
     return valid
 
@@ -100,7 +101,7 @@ def extract_times_from_image(center_img):
     line_h = center_img.height // max(len(lines),1)
 
     for i, line in enumerate(lines):
-        if "免戦" in line or "免" in line:
+        if "免戦" in line or "院戦" in line or "免" in line:
             # この行の高さだけ再OCR（数字限定モード）
             y1 = i * line_h
             y2 = (i+1) * line_h
@@ -123,7 +124,7 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（免戦時間専用OCRモード）")
+        await message.channel.send("✅ BOT動いてるよ！（領域拡張で残り時間対応）")
         return
 
     if message.attachments:

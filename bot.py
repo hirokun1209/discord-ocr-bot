@@ -15,22 +15,22 @@ def crop_center_area(img):
     # 中央領域は35%〜65%のまま固定
     return img.crop((w*0.05, h*0.35, w*0.55, h*0.65))
 
-# ===== 分割関数（1枚目大きめ、2枚目以降統一小さめ） =====
-def split_preview_mixed(center_raw):
+# ===== 分割関数（1枚目小さめ(1/6)、残りは大きめ(1/4)で統一） =====
+def split_preview_mixed_correct(center_raw):
     w, h = center_raw.size
     parts = []
 
-    # --- Part1 = 上1/4 ---
-    part1_h = h // 4
+    # --- Part1 = 小さめ(1/6) ---
+    part1_h = h // 6
     part1 = center_raw.crop((0, 0, w, part1_h))
     parts.append(part1)
 
-    # --- Part2〜4 = 同じ小さいサイズ（1/6） ---
-    part_small_h = h // 6
+    # --- Part2〜4 = 大きめ(1/4) ---
+    part_big_h = h // 4
 
     y_start = part1_h
     for _ in range(3):
-        y_end = y_start + part_small_h
+        y_end = y_start + part_big_h
         part = center_raw.crop((0, y_start, w, min(y_end, h)))
         parts.append(part)
         y_start = y_end
@@ -48,7 +48,7 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（1枚目大きめ＋2枚目以降統一小さめプレビュー版）")
+        await message.channel.send("✅ BOT動いてるよ！（1枚目小さめ・2枚目以降大きめプレビュー版）")
         return
 
     if message.attachments:
@@ -61,8 +61,8 @@ async def on_message(message):
             # === 中央OCR領域 ===
             center_raw = crop_center_area(img)
 
-            # 分割プレビュー（1枚目大きめ＋残り小さめ統一）
-            parts = split_preview_mixed(center_raw)
+            # 分割プレビュー（1枚目小さめ＋残り大きめ統一）
+            parts = split_preview_mixed_correct(center_raw)
             for idx, p_img in enumerate(parts):
                 buf = BytesIO()
                 p_img.save(buf, format="PNG")

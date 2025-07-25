@@ -1,114 +1,62 @@
 import discord
-from PIL import Image, ImageFilter
-from io import BytesIO
+from PIL import Image
 import pytesseract
-import re, os
 
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = "YOUR_DISCORD_BOT_TOKEN"
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# === 強力前処理 ===
-def preprocess_for_station_strong(img: Image.Image):
-    gray = img.convert("L")
-    # コントラスト強調
-    gray = gray.point(lambda x: min(255, int(x * 1.4)))
-    # 二値化(しきい値160)
-    binary = gray.point(lambda x: 0 if x < 160 else 255, '1')
-    # シャープ化
-    sharp = binary.filter(ImageFilter.SHARPEN)
-    return sharp
+# === 座標設定 ===
+base_y = 480
+row_height = 160
+num_box_x = (120, 250)    # 駐騎場番号
+time_box_x = (360, 540)   # 免戦時間
 
-# === 行単位日本語OCR ===
-def ocr_japanese_line(img: Image.Image):
-    config = "--oem 3 --psm 7"
-    return pytesseract.image_to_string(img, lang="jpn", config=config)
+def extract_slots(img_path):
+    img = Image.open(img_path)
+    results = []
 
-# === OCR補正 ===
-def normalize_station_text(text: str):
-    return (text.replace("須場","騎場")
-                .replace("前場","騎場")
-                .replace("崎場","騎場")
-                .replace("駐須","駐騎")
-                .replace("駐前","駐騎")
-                .replace("駐崎","駐騎"))
-
-# === 駐騎場番号抽出 ===
-def extract_station_number_strict(text: str):
-    text = normalize_station_text(text)
-    m = re.findall(r'駐騎場\s*(\d{1,2})', text)
-    return [x for x in m if x.isdigit() and 1 <= int(x) <= 12]
-
-# === 中央領域切り出し ===
-def crop_center_area(img):
-    w,h = img.size
-    return img.crop((w*0.05, h*0.35, w*0.55, h*0.65))
-
-def split_preview_smaller_all(center_raw):
-    w, h = center_raw.size
-    parts = []
-    part1_h = h // 8
-    parts.append(center_raw.crop((0, 0, w, part1_h)))
-    remaining_height = h - part1_h
-    block_h = remaining_height // 4
-    y_start = part1_h
-    for _ in range(3):
-        y_end = y_start + block_h
-        parts.append(center_raw.crop((0, y_start, w, y_end)))
-        y_start = y_end
-    return parts
-
-@client.event
-async def on_ready():
-    print(f"✅ BOTログイン成功: {client.user}")
+    for i in range(3):  # 1枚に最大3行
+        y1 = base_y + i * row_height
+        y2 = y1 + 50  # 高さ50px
+        
+        num_crop  = img.crop((num_box_x[0], y1, num_box_x[1], y2))
+        time_crop = img.crop((time_box_x[0], y1, time_box_x[1], y2))
+        
+        parking_num = pytesseract.image_to_string(
+            num_crop, config="--psm 7 -c tessedit_char_whitelist=0123456789"
+        ).strip()
+        
+        timer_text = pytesseract.image_to_string(
+            time_crop, config="--psm 7 -c tessedit_char_whitelist=0123456789:"
+        ).strip()
+        
+        if not parking_num:
+            continue  # 空行ならスキップ
+        
+        if timer_text:
+            results.append(f"行{i+1} → 駐騎場番号: {parking_num}, 免戦時間: {timer_text}")
+        else:
+            results.append(f"行{i+1} → 駐騎場番号: {parking_num}, 開戦済")
+    
+    return "\n".join(results)
 
 @client.event
 async def on_message(message):
     if message.author.bot:
         return
 
-    if message.content.strip() == "!test3":
-        await message.channel.send("✅ 駐騎場OCR強力前処理テストモード起動！")
-        return
-
     if message.attachments:
-        await message.channel.send("📥 画像受信！強処理OCRテスト中…")
-
+        # 受け取ったときの即レス
+        await message.channel.send("✅ 画像を受け取りました！解析中です…")
+        
         for attachment in message.attachments:
-            img_data = await attachment.read()
-            img = Image.open(BytesIO(img_data))
-            center_raw = crop_center_area(img)
-            blocks = split_preview_smaller_all(center_raw)
-
-            # Part2〜4だけテスト
-            for idx, b in enumerate(blocks[1:], start=2):
-                proc = preprocess_for_station_strong(b)
-
-                # OCR結果（補正前）
-                raw_text = ocr_japanese_line(proc)
-                fixed_text = normalize_station_text(raw_text)
-                station_nums = extract_station_number_strict(raw_text)
-
-                # 画像送信
-                buf_raw = BytesIO(); b.save(buf_raw, format="PNG"); buf_raw.seek(0)
-                buf_proc = BytesIO(); proc.save(buf_proc, format="PNG"); buf_proc.seek(0)
-
-                result_msg = (
-                    f"📸 Part{idx} OCR結果\n"
-                    f"**補正前:**\n```\n{raw_text}\n```\n"
-                    f"**補正後:**\n```\n{fixed_text}\n```\n"
-                )
-                if station_nums:
-                    result_msg += f"✅ 抽出駐騎場番号: {station_nums}"
-
-                await message.channel.send(
-                    result_msg,
-                    files=[
-                        discord.File(buf_raw, f"part{idx}_raw.png"),
-                        discord.File(buf_proc, f"part{idx}_processed.png")
-                    ]
-                )
+            file_path = f"/tmp/{attachment.filename}"
+            await attachment.save(file_path)
+            
+            debug_result = extract_slots(file_path)
+            await message.channel.send(f"[DEBUG 結果]\n{debug_result}")
 
 client.run(TOKEN)

@@ -11,7 +11,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# ===== 前処理 =====
+# ===== 基本前処理 =====
 def preprocess_image(img: Image.Image) -> Image.Image:
     img = img.resize((img.width * 4, img.height * 4))
     img = img.convert("L")  # グレースケール
@@ -31,12 +31,18 @@ def crop_center_area(img):
     w,h = img.size
     return img.crop((w*0.05, h*0.35, w*0.55, h*0.70))
 
-# ===== OCR呼び出し =====
+# ===== OCR共通 =====
 def ocr_text(img: Image.Image, psm=4) -> str:
     config = f"--oem 3 --psm {psm}"
     return pytesseract.image_to_string(img, lang="jpn+eng", config=config)
 
-# ===== 誤検出補正ロジック =====
+# ===== 時間専用OCR（数字限定モード） =====
+def ocr_time_line(img: Image.Image) -> str:
+    # 数字とコロンだけ認識
+    config = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789:"
+    return pytesseract.image_to_string(img, lang="eng", config=config)
+
+# ===== 誤検出補正 =====
 def clean_text(text: str) -> str:
     replacements = {
         "駒場": "駐騎場",
@@ -54,23 +60,19 @@ def clean_text(text: str) -> str:
         text = text.replace(k, v)
     return text
 
-# ===== 時間補正ロジック =====
+# ===== 時間フォーマット補正 =====
 def normalize_time_format(line: str):
-    # 6桁数字をHH:MM:SSに補正
+    line = line.replace("O","0").replace("o","0").replace("B","8")
     m = re.search(r'(\d{6})', line)
     if m:
         raw = m.group(1)
         return f"{raw[0:2]}:{raw[2:4]}:{raw[4:6]}"
-    # コロン区切りが既にあればそのまま
     m2 = re.search(r'([0-2]?\d:[0-5]\d:[0-5]\d)', line)
     if m2:
         return m2.group(1)
     return None
 
-# ===== 抽出関数 =====
-def extract_base_time(text):
-    return normalize_time_format(text)
-
+# ===== サーバー番号/駐騎場番号抽出 =====
 def extract_server_id(text):
     m = re.search(r'\[s?(\d{2,4})\]', text, re.IGNORECASE)
     return m.group(1) if m else None
@@ -85,14 +87,30 @@ def extract_station_numbers(text: str):
                 valid.append(str(num))
     return valid
 
-def extract_times_near_keyword(text: str):
+# ===== 免戦中行 → 再OCRで時間だけ正確に読む =====
+def extract_times_from_image(center_img):
+    rough_text = ocr_text(center_img, psm=4)
+    lines = rough_text.splitlines()
     times = []
-    for line in text.splitlines():
+
+    if len(lines) == 0:
+        return []
+
+    # 1行あたりの高さ推定
+    line_h = center_img.height // max(len(lines),1)
+
+    for i, line in enumerate(lines):
         if "免戦" in line or "免" in line:
-            t = normalize_time_format(line)
+            # この行の高さだけ再OCR（数字限定モード）
+            y1 = i * line_h
+            y2 = (i+1) * line_h
+            line_img = center_img.crop((0, y1, center_img.width, y2))
+            raw_time = ocr_time_line(line_img)
+            t = normalize_time_format(raw_time)
             if t:
                 times.append(t)
-    return times
+
+    return times[:3]  # 最大3件
 
 # ===== Discord BOTイベント =====
 @client.event
@@ -105,7 +123,7 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（最大3件補正版）")
+        await message.channel.send("✅ BOT動いてるよ！（免戦時間専用OCRモード）")
         return
 
     if message.attachments:
@@ -118,7 +136,7 @@ async def on_message(message):
             # === 基準時間 ===
             base_img = preprocess_image(crop_top_right(img))
             base_text = ocr_text(base_img, psm=7)  # 1行優先
-            base_time = extract_base_time(base_text)
+            base_time = normalize_time_format(base_text)
 
             # === 中央OCR ===
             center_img = preprocess_image(crop_center_area(img))
@@ -135,10 +153,10 @@ async def on_message(message):
             # 駐騎場番号（最大3件）
             station_numbers = extract_station_numbers(center_text)[:3]
 
-            # 免戦時間 → 免戦中行からのみ抽出（最大3件）
-            immune_times = extract_times_near_keyword(center_text)[:3]
+            # === 免戦中行だけ再OCR（数字限定モードで時間正確化） ===
+            immune_times = extract_times_from_image(center_img)
 
-            # ===== 時間補正後処理 =====
+            # ===== データ数補正 =====
             if not base_time:
                 await message.channel.send("⚠️ 基準時間が読めませんでした")
                 return
@@ -147,7 +165,6 @@ async def on_message(message):
                 await message.channel.send("⚠️ サーバー番号が読めませんでした")
                 return
 
-            # 足りない分は?で補完
             if len(station_numbers) != len(immune_times):
                 await message.channel.send(
                     f"⚠️ データ数不一致\n"
@@ -160,7 +177,7 @@ async def on_message(message):
                 while len(station_numbers) < len(immune_times):
                     station_numbers.append("?")
 
-            # === 結果計算 ===
+            # === 計算して最終結果 ===
             base_dt = datetime.strptime(base_time,"%H:%M:%S")
             results=[]
             for i,t in enumerate(immune_times):

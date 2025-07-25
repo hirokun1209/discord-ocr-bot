@@ -3,6 +3,7 @@ import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter
 from io import BytesIO
 import re
+from datetime import datetime, timedelta
 import os
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -22,6 +23,11 @@ def preprocess_image(img: Image.Image) -> Image.Image:
     img = img.point(lambda x: 0 if x < 128 else 255, '1')
     return img
 
+def crop_top_right(img: Image.Image) -> Image.Image:
+    """右上(基準時間)だけ切り出し"""
+    w, h = img.size
+    return img.crop((w * 0.75, h * 0.0, w * 0.98, h * 0.1))
+
 def crop_center_area(img: Image.Image) -> Image.Image:
     """画面中央付近（高さ40～70%）だけ切り出す"""
     w, h = img.size
@@ -35,6 +41,11 @@ def clean_ocr_text(text: str) -> str:
     text = text.replace("駐脱場", "駐騎場")
     text = text.replace("駐聴場", "駐騎場")
     return text
+
+def extract_base_time(text: str) -> str:
+    """右上の基準時間(HH:MM:SS)"""
+    m = re.search(r'([0-2]?\d:[0-5]\d:[0-5]\d)', text)
+    return m.group(1) if m else None
 
 def extract_server_id(text: str) -> str:
     """サーバー番号は最後の1～999を採用"""
@@ -89,44 +100,61 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、中央OCR処理中…")
+        await message.channel.send("📥 画像を受け取りました、OCR処理中…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
             img = Image.open(BytesIO(img_data))
 
-            # 画面中央だけ切り出し
-            center_img = crop_center_area(preprocess_image(img))
+            # === 基準時間OCR（右上） ===
+            base_img = crop_top_right(preprocess_image(img))
+            base_text = pytesseract.image_to_string(base_img, lang="eng", config="--psm 7")
+            base_time = extract_base_time(base_text)
 
-            # OCR実行
-            text = pytesseract.image_to_string(center_img, lang="jpn", config=OCR_CONFIG)
-            text = clean_ocr_text(text)
-            await message.channel.send(f"📄 中央OCR結果:\n```\n{text}\n```")
+            # === 中央OCR（駐騎場情報） ===
+            center_img = crop_center_area(preprocess_image(img))
+            center_text = clean_ocr_text(
+                pytesseract.image_to_string(center_img, lang="jpn", config=OCR_CONFIG)
+            )
+
+            await message.channel.send(f"⏫ 基準時間OCR:\n```\n{base_text}\n```")
+            await message.channel.send(f"📄 中央OCR結果:\n```\n{center_text}\n```")
 
             # サーバー番号 / 駐騎場番号 / 免戦時間抽出
-            server_id = extract_server_id(text)
-            station_numbers = extract_station_numbers(text)
-            immune_times = extract_times(text)
+            server_id = extract_server_id(center_text)
+            station_numbers = extract_station_numbers(center_text)
+            immune_times = extract_times(center_text)
+
+            # 基準時間が読めなかった場合はエラー
+            if not base_time:
+                await message.channel.send("⚠️ 基準時間が右上から読み取れませんでした")
+                return
 
             # データ数が一致しない場合は警告
             if len(station_numbers) != len(immune_times):
                 await message.channel.send(
                     f"⚠️ データ数不一致\n"
+                    f"基準時間: {base_time}\n"
                     f"サーバー番号: {server_id}\n"
                     f"駐騎場番号({len(station_numbers)}件): {', '.join(station_numbers) if station_numbers else 'なし'}\n"
                     f"免戦時間({len(immune_times)}件): {', '.join(immune_times) if immune_times else 'なし'}"
                 )
                 return
 
-            # 正常なら1対1で結果生成
+            # === 計算：基準時間 + 免戦時間 ===
+            base_dt = datetime.strptime(base_time, "%H:%M:%S")
             results = []
             for idx, t in enumerate(immune_times):
                 station_name = f"越域駐騎場{station_numbers[idx]}"
-                results.append(f"{station_name}({server_id}) +{t}")
+                h, m, s = map(int, t.split(":"))
+                end_dt = (base_dt + timedelta(hours=h, minutes=m, seconds=s)).time()
+                results.append(f"{station_name}({server_id}) {end_dt.strftime('%H:%M:%S')}")
 
             if results:
                 await message.channel.send("\n".join(results))
             else:
-                await message.channel.send(f"サーバー番号: {server_id}\n⚠️ 有効な駐騎場番号 or 時間なし")
+                await message.channel.send(
+                    f"基準時間: {base_time}\nサーバー番号: {server_id}\n⚠️ 有効な駐騎場番号 or 免戦時間なし"
+                )
 
 client.run(TOKEN)

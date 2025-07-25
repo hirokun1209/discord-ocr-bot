@@ -1,49 +1,39 @@
 import os
 import discord
 from PIL import Image
-import pytesseract
 
-# ✅ トークンは環境変数から取得
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# === 座標設定 ===
-base_y = 480
-row_height = 160
-num_box_x = (120, 250)    # 駐騎場番号
-time_box_x = (360, 540)   # 免戦時間
+# === 現在の仮座標 ===
+base_y = 480        # 1行目Y座標
+row_height = 160    # 各行の高さ
+num_box_x = (120, 250)   # 駐騎場番号
+time_box_x = (360, 540)  # 免戦時間
 
-def extract_slots(img_path):
+def crop_debug_images(img_path):
     img = Image.open(img_path)
-    results = []
+    cropped_paths = []
 
-    for i in range(3):  # 1枚に最大3行
+    for i in range(3):
         y1 = base_y + i * row_height
-        y2 = y1 + 50  # 高さ50px
-        
-        num_crop  = img.crop((num_box_x[0], y1, num_box_x[1], y2))
-        time_crop = img.crop((time_box_x[0], y1, time_box_x[1], y2))
-        
-        parking_num = pytesseract.image_to_string(
-            num_crop, config="--psm 7 -c tessedit_char_whitelist=0123456789"
-        ).strip()
-        
-        timer_text = pytesseract.image_to_string(
-            time_crop, config="--psm 7 -c tessedit_char_whitelist=0123456789:"
-        ).strip()
-        
-        if not parking_num:
-            continue  # 空行ならスキップ
-        
-        if timer_text:
-            results.append(f"行{i+1} → 駐騎場番号: {parking_num}, 免戦時間: {timer_text}")
-        else:
-            results.append(f"行{i+1} → 駐騎場番号: {parking_num}, 開戦済")
-    
-    return "\n".join(results)
+        y2 = y1 + 50  # ボックス高さ50px
+
+        # 切り出しファイル名
+        num_crop_path = f"/tmp/debug_num_{i+1}.png"
+        time_crop_path = f"/tmp/debug_time_{i+1}.png"
+
+        # 駐騎場番号
+        img.crop((num_box_x[0], y1, num_box_x[1], y2)).save(num_crop_path)
+        # 免戦時間
+        img.crop((time_box_x[0], y1, time_box_x[1], y2)).save(time_crop_path)
+
+        cropped_paths.append((num_crop_path, time_crop_path))
+
+    return cropped_paths
 
 @client.event
 async def on_message(message):
@@ -51,14 +41,21 @@ async def on_message(message):
         return
 
     if message.attachments:
-        # 受け取ったときの即レス
-        await message.channel.send("✅ 画像を受け取りました！解析中です…")
+        await message.channel.send("✅ 画像を受け取りました！切り出し確認します…")
         
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"
             await attachment.save(file_path)
-            
-            debug_result = extract_slots(file_path)
-            await message.channel.send(f"[DEBUG 結果]\n{debug_result}")
+
+            crops = crop_debug_images(file_path)
+
+            for idx, (num_img, time_img) in enumerate(crops, start=1):
+                await message.channel.send(
+                    f"行{idx} の切り出し結果（駐騎場番号 / 免戦時間）",
+                    files=[
+                        discord.File(num_img, filename=f"行{idx}_番号.png"),
+                        discord.File(time_img, filename=f"行{idx}_時間.png")
+                    ]
+                )
 
 client.run(TOKEN)

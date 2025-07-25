@@ -18,9 +18,8 @@ base_y = 1095
 row_height = 310
 crop_height = 140  # 下に余裕+20
 
-# 番号と免戦時間を左右で分割
-num_box_x  = (270, 400)  # 左側：番号専用
-time_box_x = (400, 630)  # 右側：免戦時間専用
+# 右側(免戦時間)のOCR領域
+time_box_x = (400, 630)
 
 def preprocess_image(img_path, save_path):
     """OCR精度向上用 前処理(2倍拡大＋シャープ化＋二値化)"""
@@ -41,11 +40,6 @@ def ocr_image(image_path, processed_path):
     """OCR前処理後に読み取り"""
     img = preprocess_image(image_path, processed_path)
     return ocr_digits_only(img)
-
-def parse_number(text):
-    """駐騎場番号(1～12)だけ抽出"""
-    m = re.search(r"\b([1-9]|1[0-2])\b", text)
-    return m.group(1) if m else "?"
 
 def parse_time(text):
     """免戦時間(HH:MM:SS)抽出"""
@@ -77,14 +71,7 @@ def crop_and_ocr(img_path):
 
         y2 = y1 + crop_height
 
-        # 番号だけ切り出し
-        num_crop = f"/tmp/num_{i+1}.png"
-        img.crop((num_box_x[0], y1, num_box_x[1], y2)).save(num_crop)
-        num_proc = f"/tmp/num_proc_{i+1}.png"
-        num_text = ocr_image(num_crop, num_proc)
-        number = parse_number(num_text)
-
-        # 免戦時間だけ切り出し
+        # 右側(免戦時間)だけ切り出し
         time_crop = f"/tmp/time_{i+1}.png"
         img.crop((time_box_x[0], y1, time_box_x[1], y2)).save(time_crop)
         time_proc = f"/tmp/time_proc_{i+1}.png"
@@ -92,10 +79,7 @@ def crop_and_ocr(img_path):
         time_val = parse_time(time_text)
 
         lines.append({
-            "number": number,
             "time": time_val,
-            "num_crop": num_crop,
-            "num_proc": num_proc,
             "time_crop": time_crop,
             "time_proc": time_proc
         })
@@ -108,7 +92,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("✅ 画像受信！番号と免戦時間を左右分割してデバッグします…")
+        await message.channel.send("✅ 画像受信！右側(免戦時間領域)だけOCRテストします…")
 
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"
@@ -119,20 +103,18 @@ async def on_message(message):
             # OCR結果まとめ
             result_msg = f"**サーバー番号:** {server_text}\n\n"
             for idx, line in enumerate(lines, start=1):
-                result_msg += f"行{idx} → 駐騎場番号: {line['number']}, {line['time']}\n"
+                result_msg += f"行{idx} → 免戦時間: {line['time']}\n"
 
             await message.channel.send(result_msg)
 
             # サーバー番号の処理画像も送る
             await message.channel.send("サーバー番号OCR前処理画像", file=discord.File(server_proc))
 
-            # 各行のデバッグ画像を送信
+            # 各行の右側OCRデバッグ画像を送信
             for idx, line in enumerate(lines, start=1):
                 await message.channel.send(
-                    f"行{idx} デバッグ用画像\n番号OCR & 免戦時間OCR",
+                    f"行{idx} 免戦時間OCRデバッグ用画像",
                     files=[
-                        discord.File(line["num_crop"], filename=f"行{idx}_番号_元画像.png"),
-                        discord.File(line["num_proc"], filename=f"行{idx}_番号_処理画像.png"),
                         discord.File(line["time_crop"], filename=f"行{idx}_時間_元画像.png"),
                         discord.File(line["time_proc"], filename=f"行{idx}_時間_処理画像.png"),
                     ]

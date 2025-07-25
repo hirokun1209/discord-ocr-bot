@@ -8,13 +8,14 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# === 1290x2796専用・少し上に戻した版 ===
-offset_y = 230  # 1行分(310px)より少なめに戻す
+# === 1290x2796専用・微調整版 ===
 
-server_box = (420, 730 + offset_y, 870, 800 + offset_y)
+# サーバー番号は10px下げる
+server_box = (420, 970, 870, 1040)
 
-base_y = 930 + offset_y     # 1160 に補正
-row_height = 310            # 行間はそのまま
+# 駐騎場3行は20px上げる
+base_y = 1140
+row_height = 310  # 行間はそのまま
 num_box_x = (180, 520)
 time_box_x = (600, 1100)
 
@@ -25,14 +26,14 @@ def crop_debug_images(img_path):
 
     cropped_paths = []
 
-    # ✅ サーバー番号を切り出す
+    # ✅ サーバー番号を切り出す（10px下）
     server_crop_path = "/tmp/debug_server.png"
     img.crop(server_box).save(server_crop_path)
 
-    # ✅ 駐騎場3行分を切り出す
+    # ✅ 駐騎場3行分を切り出す（20px上）
     for i in range(3):
         y1 = base_y + i * row_height
-        y2 = y1 + 110  # 高さ広め
+        y2 = y1 + 110
 
         num_crop_path = f"/tmp/debug_num_{i+1}.png"
         time_crop_path = f"/tmp/debug_time_{i+1}.png"
@@ -50,7 +51,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("✅ 画像を受け取りました！少しだけ上に戻した座標で切り出します…")
+        await message.channel.send("✅ 画像を受け取りました！サーバー番号10px下・駐騎場20px上で切り出します…")
         
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"

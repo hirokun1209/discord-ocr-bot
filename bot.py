@@ -1,5 +1,5 @@
 import discord
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image
 from io import BytesIO
 import pytesseract
 import re, os
@@ -20,7 +20,6 @@ def ocr_time_line(img: Image.Image):
     config = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789:"
     return pytesseract.image_to_string(img, lang="eng", config=config)
 
-# ===== 時間フォーマット補正 =====
 def normalize_time_format(line: str):
     line = line.replace("O","0").replace("o","0").replace("B","8")
     m = re.search(r'(\d{6})', line)
@@ -33,15 +32,10 @@ def normalize_time_format(line: str):
     return None
 
 # ===== 切り出し領域 =====
-def crop_top_right(img):
-    w,h = img.size
-    return img.crop((w*0.70, h*0.05, w*0.99, h*0.15))  # 基準時間
-
 def crop_center_area(img):
     w,h = img.size
     return img.crop((w*0.05, h*0.35, w*0.55, h*0.65))  # 中央確定範囲
 
-# ===== 4分割：1枚目小さい・残り小さめ =====
 def split_preview_smaller_all(center_raw):
     w, h = center_raw.size
     parts = []
@@ -58,12 +52,10 @@ def split_preview_smaller_all(center_raw):
         y_start = y_end
     return parts  # 4枚
 
-# ===== サーバー番号抽出 =====
 def extract_server_id(text):
     m = re.findall(r'\[s?(\d{2,4})\]', text, re.IGNORECASE)
-    return m[-1] if m else None  # 最後が正解
+    return m[-1] if m else None
 
-# ===== 駐騎場番号抽出 =====
 def extract_station_numbers(text):
     nums = re.findall(r'駐.*?場\s*(\d+)', text)
     valid = []
@@ -72,7 +64,6 @@ def extract_station_numbers(text):
             valid.append(n)
     return valid
 
-# ===== Discord BOT =====
 @client.event
 async def on_ready():
     print(f"✅ BOTログイン成功: {client.user}")
@@ -83,20 +74,27 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（サーバー/駐騎場/免戦時間OCR版）")
+        await message.channel.send("✅ BOT動いてるよ！（ファイルタイムスタンプ基準版）")
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、解析中…")
+        await message.channel.send("📥 画像を受け取りました、ファイルのタイムスタンプを基準時間にします…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
-            img = Image.open(BytesIO(img_data))
 
-            # === 基準時間 ===
-            base_img = crop_top_right(img)
-            base_text = ocr_text(base_img, psm=7)
-            base_time = normalize_time_format(base_text)
+            # 一時保存してタイムスタンプ取得
+            tmp_path = f"/tmp/{attachment.filename}"
+            with open(tmp_path, "wb") as f:
+                f.write(img_data)
+
+            stat = os.stat(tmp_path)
+            # ファイルの更新時刻
+            base_dt = datetime.fromtimestamp(stat.st_mtime)
+            base_time_str = base_dt.strftime("%H:%M:%S")
+
+            # 画像読み込み
+            img = Image.open(BytesIO(img_data))
 
             # === 中央OCR領域を4分割 ===
             center_raw = crop_center_area(img)
@@ -119,10 +117,6 @@ async def on_message(message):
                         if t:
                             pairs.append((station_nums[0], t))
 
-            # === 結果組み立て ===
-            if not base_time:
-                await message.channel.send("⚠️ 基準時間が読めませんでした")
-                return
             if not server_id:
                 await message.channel.send("⚠️ サーバー番号が読めませんでした")
                 return
@@ -130,14 +124,13 @@ async def on_message(message):
                 await message.channel.send("⚠️ 駐騎場番号＋免戦時間が読めませんでした")
                 return
 
-            # 基準時間に免戦時間を足す
-            base_dt = datetime.strptime(base_time, "%H:%M:%S")
-            results = []
+            # === 基準時間(ファイルの撮影時刻) + 免戦時間を足す ===
+            results = [f"📸 スクショ撮影基準時間: {base_time_str}\nサーバー番号: {server_id}"]
             for st, immune_t in pairs:
                 hms = list(map(int, immune_t.split(":")))
                 while len(hms) < 3: hms.append(0)
                 end_dt = (base_dt + timedelta(hours=hms[0], minutes=hms[1], seconds=hms[2])).time()
-                results.append(f"越域駐騎場{st} ({server_id}) {end_dt.strftime('%H:%M:%S')}")
+                results.append(f"越域駐騎場{st} → 終了予定 {end_dt.strftime('%H:%M:%S')}")
 
             await message.channel.send("\n".join(results))
 

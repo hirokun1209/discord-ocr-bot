@@ -1,3 +1,6 @@
+discord.py
+pytesseract
+pillow
 easyocr
 torch
 torchvision

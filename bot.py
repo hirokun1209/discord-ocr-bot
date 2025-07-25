@@ -17,30 +17,35 @@ server_box = (420, 970, 870, 1040)
 base_y = 1095             # 行1の基準位置
 row_height = 310          # 行間
 full_box_x = (270, 630)   # 横幅
-crop_height = 120         # 下に10px伸ばした高さ
+crop_height = 140         # 高さ余裕 +20
 
 def preprocess_image(img_path, save_path):
     """OCR精度向上用に前処理（二値化・コントラスト強調）"""
     img = Image.open(img_path).convert("L")  # グレースケール
     img = ImageOps.autocontrast(img)         # コントラスト補正
     img = img.point(lambda x: 0 if x < 160 else 255, '1')  # 二値化
-    img.save(save_path)  # 処理後の画像を保存
+    img.save(save_path)
     return img
 
-def ocr_image(image_path, processed_path):
-    """前処理後にOCR"""
-    img = preprocess_image(image_path, processed_path)
-    text = pytesseract.image_to_string(img, lang="eng")  # 英数字のみ
+def ocr_digits_only(img):
+    """数字＆コロン専用OCR"""
+    custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789:'
+    text = pytesseract.image_to_string(img, config=custom_config)
     return text.strip()
+
+def ocr_image(image_path, processed_path):
+    """前処理後にOCR（数字優先）"""
+    img = preprocess_image(image_path, processed_path)
+    return ocr_digits_only(img)
 
 def parse_line_text(text):
     """OCR結果から番号＆免戦時間抽出"""
-    # 駐騎場番号（1～12の数字）
+    # 駐騎場番号（1～12）
     num_match = re.search(r"\b([1-9]|1[0-2])\b", text)
     number = num_match.group(1) if num_match else "?"
     
     # 時間フォーマット（免戦時間）
-    time_match = re.search(r"(\d{1,2}[:：]\d{2}[:：]\d{2})", text)
+    time_match = re.search(r"(\d{1,2}[:：]\d{1,2}[:：]\d{1,2})", text)
     if time_match:
         time_val = time_match.group(1).replace("：", ":")  # 全角→半角
     else:
@@ -50,8 +55,6 @@ def parse_line_text(text):
 
 def crop_and_ocr(img_path):
     img = Image.open(img_path)
-    img_w, img_h = img.size
-    print(f"画像サイズ: {img_w} x {img_h}")
 
     # ✅ サーバー番号切り出し
     server_crop = "/tmp/debug_server.png"
@@ -61,9 +64,12 @@ def crop_and_ocr(img_path):
 
     # ✅ 駐騎場3行OCR
     lines = []
-    processed_imgs = []
     for i in range(3):
         y1 = base_y + i * row_height
+
+        # 行1は5px上げる
+        if i == 0:
+            y1 -= 5
 
         # 行2だけ100px上補正
         if i == 1:
@@ -73,19 +79,18 @@ def crop_and_ocr(img_path):
         if i == 2:
             y1 -= 200
 
-        y2 = y1 + crop_height
+        y2 = y1 + crop_height  # 高さ余裕+20
         crop_path = f"/tmp/debug_full_{i+1}.png"
         img.crop((full_box_x[0], y1, full_box_x[1], y2)).save(crop_path)
 
         # 前処理後の画像パス
         proc_path = f"/tmp/debug_full_proc_{i+1}.png"
 
-        # OCR解析
+        # OCR解析（数字＋コロン限定）
         raw_text = ocr_image(crop_path, proc_path)
         number, time_val = parse_line_text(raw_text)
 
         lines.append((number, time_val, crop_path, proc_path))
-        processed_imgs.append(proc_path)
 
     return server_text, lines, server_proc
 
@@ -95,7 +100,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("✅ 画像受信！前処理＋OCR解析開始します…")
+        await message.channel.send("✅ 画像受信！数字限定OCR＋行1補正で再解析します…")
 
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"
@@ -103,17 +108,17 @@ async def on_message(message):
 
             server_text, lines, server_proc = crop_and_ocr(file_path)
 
-            # OCR結果フォーマット
+            # サーバー番号OCR結果
             result_msg = f"**サーバー番号:** {server_text}\n\n"
             for idx, (num, tval, orig, proc) in enumerate(lines, start=1):
                 result_msg += f"行{idx} → 駐騎場番号: {num}, {tval}\n"
 
             await message.channel.send(result_msg)
 
-            # サーバー番号の前処理画像も送る
+            # サーバー番号処理画像
             await message.channel.send("サーバー番号OCR前処理画像", file=discord.File(server_proc))
 
-            # 各行の「元画像＋処理画像」を両方送る
+            # 各行の「元画像＋処理画像」
             for idx, (num, tval, orig, proc) in enumerate(lines, start=1):
                 await message.channel.send(
                     f"行{idx} OCR前処理結果",

@@ -30,9 +30,9 @@ def crop_top_right(img: Image.Image) -> Image.Image:
     return img.crop((w * 0.75, h * 0.07, w * 0.98, h * 0.13))
 
 def crop_center_area(img: Image.Image) -> Image.Image:
-    """中央OCR → 右を大きく削って高さ35〜65%、横10〜70%"""
+    """中央OCR → 右をさらに削って高さ35〜65%、横10〜60%"""
     w, h = img.size
-    return img.crop((w * 0.1, h * 0.35, w * 0.7, h * 0.65))
+    return img.crop((w * 0.1, h * 0.35, w * 0.6, h * 0.65))
 
 def clean_ocr_text(text: str) -> str:
     """OCR結果の不要文字・誤認補正"""
@@ -42,6 +42,7 @@ def clean_ocr_text(text: str) -> str:
     text = text.replace("駐脱場", "駐騎場")
     text = text.replace("駐聴場", "駐騎場")
     text = text.replace("越域駐豚場", "越域駐騎場")
+    # OCR誤認識の補正
     text = re.sub(r"(\d)[;；](\d)", r"\1:\2", text)  # 23;23 → 23:23
     text = re.sub(r"O(\d)", r"0\1", text)  # O3:25 → 03:25
     return text
@@ -109,16 +110,20 @@ async def on_message(message):
 
             # === 基準時間OCR（右上ピンポイント） ===
             base_img = preprocess_image(crop_top_right(img))
+            base_img.save("/tmp/debug_base.png")  # デバッグ用保存
+            await message.channel.send(file=discord.File("/tmp/debug_base.png", "base_debug.png"))
             base_text = pytesseract.image_to_string(base_img, lang="jpn+eng", config=BASE_OCR_CONFIG)
             base_time = extract_base_time(base_text)
 
-            # === 中央OCR（駐騎場情報のみ・右70%まで） ===
+            # === 中央OCR（駐騎場情報のみ・右60%まで） ===
             center_img = preprocess_image(crop_center_area(img))
+            center_img.save("/tmp/debug_center.png")  # デバッグ用保存
+            await message.channel.send(file=discord.File("/tmp/debug_center.png", "center_debug.png"))
             center_text = clean_ocr_text(
                 pytesseract.image_to_string(center_img, lang="jpn+eng", config=CENTER_OCR_CONFIG)
             )
 
-            # デバッグ出力
+            # デバッグOCR結果
             await message.channel.send(f"⏫ 基準時間OCR:\n```\n{base_text}\n```")
             await message.channel.send(f"📄 中央OCR結果:\n```\n{center_text}\n```")
 

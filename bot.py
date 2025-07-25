@@ -16,8 +16,8 @@ client = discord.Client(intents=intents)
 
 def preprocess_image(img: Image.Image) -> Image.Image:
     """OCR前に画像拡大＋補正"""
-    img = img.resize((img.width * 2, img.height * 2))  # 2倍拡大で小さい文字も読みやすく
-    img = img.convert("L")  # グレースケール化
+    img = img.resize((img.width * 2, img.height * 2))  # 2倍拡大
+    img = img.convert("L")  # グレースケール
     img = ImageEnhance.Contrast(img).enhance(2.0)  # コントラスト強調
     img = img.filter(ImageFilter.SHARPEN)  # シャープ化
     return img
@@ -28,9 +28,9 @@ def crop_top_right(img: Image.Image) -> Image.Image:
     return img.crop((w * 0.75, h * 0.07, w * 0.98, h * 0.13))
 
 def crop_center_area(img: Image.Image) -> Image.Image:
-    """中央OCR → 下を狭めて高さ35〜70%"""
+    """中央OCR → さらに下を削って高さ35〜65%"""
     w, h = img.size
-    return img.crop((w * 0.1, h * 0.35, w * 0.9, h * 0.70))
+    return img.crop((w * 0.1, h * 0.35, w * 0.9, h * 0.65))
 
 def clean_ocr_text(text: str) -> str:
     """OCR結果の不要文字補正"""
@@ -72,10 +72,8 @@ def extract_times(text: str):
         elif len(parts) == 2:
             first, second = map(int, parts)
             if first < 6:
-                # HH:MM → 秒補完
                 h, m, s = first, second, 0
             else:
-                # MM:SS → 時間0補完
                 h, m, s = 0, first, second
             t = f"{h:02}:{m:02}:{s:02}"
         else:
@@ -111,7 +109,7 @@ async def on_message(message):
             base_text = pytesseract.image_to_string(base_img, lang="eng", config="--psm 7")
             base_time = extract_base_time(base_text)
 
-            # === 中央OCR（駐騎場情報 下を狭めた版） ===
+            # === 中央OCR（駐騎場情報 下をさらに削った版） ===
             center_img = preprocess_image(crop_center_area(img))
             center_img.save("/tmp/debug_center.png")
             await message.channel.send(file=discord.File("/tmp/debug_center.png", "center_debug.png"))

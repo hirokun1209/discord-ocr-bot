@@ -8,9 +8,8 @@ import os
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# 中央OCRは複数行解析に変更
-CENTER_OCR_CONFIG = "--oem 3 --psm 6"
-BASE_OCR_CONFIG = "--oem 3 --psm 7"
+CENTER_OCR_CONFIG = "--oem 3 --psm 6"  # 中央OCRは複数行解析
+BASE_OCR_CONFIG = "--oem 3 --psm 7"    # 基準時間は1行解析
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -21,8 +20,7 @@ def preprocess_image(img: Image.Image) -> Image.Image:
     img = img.resize((img.width * 3, img.height * 3))  # 3倍拡大で輪郭強化
     img = img.convert("L")  # グレースケール
     img = ImageEnhance.Contrast(img).enhance(3.0)  # コントラストさらに強く
-    # 白黒2値化で背景ノイズを除去
-    img = img.point(lambda p: 255 if p > 160 else 0)
+    img = img.point(lambda p: 255 if p > 180 else 0)  # 白黒化でノイズ削除
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
@@ -32,20 +30,18 @@ def crop_top_right(img: Image.Image) -> Image.Image:
     return img.crop((w * 0.75, h * 0.07, w * 0.98, h * 0.13))
 
 def crop_center_area(img: Image.Image) -> Image.Image:
-    """中央OCR → 高さ35〜65%（駐騎場情報だけ）"""
+    """中央OCR → 右を大きく削って高さ35〜65%、横10〜70%"""
     w, h = img.size
-    return img.crop((w * 0.1, h * 0.35, w * 0.9, h * 0.65))
+    return img.crop((w * 0.1, h * 0.35, w * 0.7, h * 0.65))
 
 def clean_ocr_text(text: str) -> str:
     """OCR結果の不要文字・誤認補正"""
-    # 代表的な誤字補正
     text = text.replace("を奪取しました", "")
     text = text.replace("奪取撃破数", "")
     text = text.replace("警備撃破数", "")
     text = text.replace("駐脱場", "駐騎場")
     text = text.replace("駐聴場", "駐騎場")
     text = text.replace("越域駐豚場", "越域駐騎場")
-    # OCRの ; や O を修正
     text = re.sub(r"(\d)[;；](\d)", r"\1:\2", text)  # 23;23 → 23:23
     text = re.sub(r"O(\d)", r"0\1", text)  # O3:25 → 03:25
     return text
@@ -116,13 +112,13 @@ async def on_message(message):
             base_text = pytesseract.image_to_string(base_img, lang="jpn+eng", config=BASE_OCR_CONFIG)
             base_time = extract_base_time(base_text)
 
-            # === 中央OCR（駐騎場情報のみ・複数行解析） ===
+            # === 中央OCR（駐騎場情報のみ・右70%まで） ===
             center_img = preprocess_image(crop_center_area(img))
             center_text = clean_ocr_text(
                 pytesseract.image_to_string(center_img, lang="jpn+eng", config=CENTER_OCR_CONFIG)
             )
 
-            # デバッグ出力（確認用）
+            # デバッグ出力
             await message.channel.send(f"⏫ 基準時間OCR:\n```\n{base_text}\n```")
             await message.channel.send(f"📄 中央OCR結果:\n```\n{center_text}\n```")
 

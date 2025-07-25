@@ -29,8 +29,8 @@ def crop_top_right(img):
 
 def crop_center_area(img):
     w,h = img.size
-    # ←縦を上下+5%拡張（30%〜75%）
-    return img.crop((w*0.05, h*0.30, w*0.55, h*0.75))
+    # **狭める: 高さ35%〜65%**
+    return img.crop((w*0.05, h*0.35, w*0.55, h*0.65))
 
 # ===== OCR共通 =====
 def ocr_text(img: Image.Image, psm=4) -> str:
@@ -124,7 +124,7 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（領域拡張で残り時間対応）")
+        await message.channel.send("✅ BOT動いてるよ！（中央領域狭め＆画像送信版）")
         return
 
     if message.attachments:
@@ -139,8 +139,16 @@ async def on_message(message):
             base_text = ocr_text(base_img, psm=7)  # 1行優先
             base_time = normalize_time_format(base_text)
 
-            # === 中央OCR ===
-            center_img = preprocess_image(crop_center_area(img))
+            # === 中央OCR領域（狭め） ===
+            center_raw = crop_center_area(img)
+            # 確認用に切り出した画像を送信
+            buf = BytesIO()
+            center_raw.save(buf, format="PNG")
+            buf.seek(0)
+            await message.channel.send("📸 中央OCRの切り出し画像:", file=discord.File(buf, "center_area.png"))
+
+            # === 中央OCR前処理 & テキスト ===
+            center_img = preprocess_image(center_raw)
             center_text_raw = ocr_text(center_img, psm=4)  # ブロック解析
             center_text = clean_text(center_text_raw)
 

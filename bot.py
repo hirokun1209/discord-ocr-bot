@@ -18,22 +18,23 @@ base_y = 1095
 row_height = 310
 crop_height = 140  # 下に余裕+20
 
-# 右側(免戦時間)のOCR領域
-time_box_x = (400, 630)
+# 右側(免戦時間)のOCR領域（+10px広げる）
+time_box_x = (390, 640)
 
 def preprocess_image(img_path, save_path):
-    """OCR精度向上用 前処理(2倍拡大＋シャープ化＋二値化)"""
-    img = Image.open(img_path).convert("L")          # グレースケール
-    img = img.resize((img.width * 2, img.height * 2)) # 2倍拡大
-    img = img.filter(ImageFilter.SHARPEN)            # シャープ化
-    img = ImageOps.autocontrast(img)                 # コントラスト強調
-    img = img.point(lambda x: 0 if x < 160 else 255, '1')  # 二値化
+    """OCR精度向上用 前処理(4倍拡大＋2回シャープ化＋二値化)"""
+    img = Image.open(img_path).convert("L")            # グレースケール
+    img = img.resize((img.width * 4, img.height * 4))  # 4倍拡大
+    img = img.filter(ImageFilter.SHARPEN)              # 1回目シャープ化
+    img = img.filter(ImageFilter.SHARPEN)              # 2回目シャープ化
+    img = ImageOps.autocontrast(img)                   # コントラスト強化
+    img = img.point(lambda x: 0 if x < 180 else 255, '1')  # 二値化（しっかりめ）
     img.save(save_path)
     return img
 
 def ocr_digits_only(img):
-    """数字＆コロン限定OCR"""
-    custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789:'
+    """数字＆コロン限定OCR（psm8→短い数字列に強い）"""
+    custom_config = r'--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789:'
     return pytesseract.image_to_string(img, config=custom_config).strip()
 
 def ocr_image(image_path, processed_path):
@@ -42,12 +43,11 @@ def ocr_image(image_path, processed_path):
     return ocr_digits_only(img)
 
 def extract_time(text):
-    """免戦時間(HH:MM:SS)抽出"""
+    """免戦時間(HH:MM:SS)抽出・補正"""
     m = re.search(r"\d{1,2}[:：]?\d{1,2}[:：]?\d{1,2}", text)
     if m:
-        # 足りないコロンがあれば補正
         time_val = m.group(0).replace("：", ":")
-        # 042137 → 04:21:37 の補正も対応
+        # 042137 → 04:21:37 の補正
         if len(time_val) == 6 and ":" not in time_val:
             time_val = f"{time_val[0:2]}:{time_val[2:4]}:{time_val[4:6]}"
         return time_val
@@ -61,7 +61,6 @@ def crop_and_ocr(img_path):
     img.crop(server_box).save(server_crop)
     server_proc = "/tmp/debug_server_proc.png"
     server_raw = ocr_image(server_crop, server_proc)
-    server_text = server_raw  # そのまま表示(生テキスト)
 
     lines = []
     for i in range(3):
@@ -93,7 +92,7 @@ def crop_and_ocr(img_path):
             "time_proc": time_proc
         })
 
-    return server_text, server_proc, lines
+    return server_raw, server_proc, lines
 
 @client.event
 async def on_message(message):
@@ -101,7 +100,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("✅ 画像受信！右側(免戦時間領域)OCR＋生テキストデバッグします…")
+        await message.channel.send("✅ 画像受信！4倍拡大＋psm8で右側OCR強化テストします…")
 
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"
@@ -109,7 +108,7 @@ async def on_message(message):
 
             server_raw, server_proc, lines = crop_and_ocr(file_path)
 
-            # OCR結果まとめ（生テキスト＋抽出結果両方表示）
+            # OCR結果まとめ（生テキスト＋抽出結果）
             result_msg = f"**サーバー番号OCR生テキスト:** \"{server_raw}\"\n\n"
             for idx, line in enumerate(lines, start=1):
                 result_msg += f"行{idx} → OCR生テキスト: \"{line['raw_text']}\"\n"

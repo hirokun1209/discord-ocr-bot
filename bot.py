@@ -16,11 +16,11 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 def preprocess_image(img: Image.Image) -> Image.Image:
-    """OCR前に画像を強化処理"""
-    img = img.resize((img.width * 3, img.height * 3))  # 3倍拡大で輪郭強化
+    """OCR前に画像を強化処理（精度向上版）"""
+    img = img.resize((img.width * 4, img.height * 4))  # 4倍拡大で文字潰れを防止
     img = img.convert("L")  # グレースケール
-    img = ImageEnhance.Contrast(img).enhance(3.0)  # コントラストさらに強く
-    img = img.point(lambda p: 255 if p > 180 else 0)  # 白黒化でノイズ削除
+    img = ImageEnhance.Contrast(img).enhance(3.5)  # コントラストさらに強く
+    img = img.point(lambda p: 255 if p > 170 else 0)  # 白黒化（細い文字も残す）
     img = img.filter(ImageFilter.SHARPEN)
     return img
 
@@ -30,7 +30,7 @@ def crop_top_right(img: Image.Image) -> Image.Image:
     return img.crop((w * 0.75, h * 0.07, w * 0.98, h * 0.13))
 
 def crop_center_area(img: Image.Image) -> Image.Image:
-    """中央OCR → 右をさらに削って高さ35〜65%、横10〜50%"""
+    """中央OCR → 右を削って高さ35〜65%、横10〜50%"""
     w, h = img.size
     return img.crop((w * 0.1, h * 0.35, w * 0.5, h * 0.65))
 
@@ -102,7 +102,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、OCR処理中…")
+        await message.channel.send("📥 画像を受け取りました、OCR精度強化版で処理中…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
@@ -119,18 +119,22 @@ async def on_message(message):
             center_img = preprocess_image(crop_center_area(img))
             center_img.save("/tmp/debug_center.png")
             await message.channel.send(file=discord.File("/tmp/debug_center.png", "center_debug.png"))
-            center_text = clean_ocr_text(
-                pytesseract.image_to_string(center_img, lang="jpn+eng", config=CENTER_OCR_CONFIG)
-            )
+            center_text_raw = pytesseract.image_to_string(center_img, lang="jpn+eng", config=CENTER_OCR_CONFIG)
+            center_text = clean_ocr_text(center_text_raw)
+
+            # OCR結果から駐騎場行だけ抽出
+            lines = [line for line in center_text.splitlines() if "駐騎場" in line]
+            filtered_text = "\n".join(lines)
 
             # デバッグOCR結果
             await message.channel.send(f"⏫ 基準時間OCR:\n```\n{base_text}\n```")
-            await message.channel.send(f"📄 中央OCR結果:\n```\n{center_text}\n```")
+            await message.channel.send(f"📄 中央OCR結果(全体):\n```\n{center_text_raw}\n```")
+            await message.channel.send(f"📄 駐騎場行だけ抽出:\n```\n{filtered_text}\n```")
 
-            # サーバー番号 / 駐騎場番号 / 免戦時間抽出
-            server_id = extract_server_id(center_text)
-            station_numbers = extract_station_numbers(center_text)
-            immune_times = extract_times(center_text)
+            # サーバー番号 / 駐騎場番号 / 免戦時間抽出（駐騎場行だけから）
+            server_id = extract_server_id(filtered_text)
+            station_numbers = extract_station_numbers(filtered_text)
+            immune_times = extract_times(filtered_text)
 
             # 基準時間が読めなかった場合
             if not base_time:

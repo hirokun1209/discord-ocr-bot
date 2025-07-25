@@ -28,10 +28,9 @@ def crop_server_id(img):
     return img.crop((w*0.3, h*0.20, w*0.7, h*0.35))
 
 def crop_center_area(img):
-    """中央OCR(駐騎場番号+免戦時間)"""
-    w,h = img.size
-    return img.crop((w*0.1, h*0.35, w*0.5, h*0.70))
-
+    """中央OCR → サーバー番号も含める縦30〜70%、横10〜50%"""
+    w, h = img.size
+    return img.crop((w * 0.1, h * 0.30, w * 0.5, h * 0.70))
 def clean_text(text):
     return text.replace("駐聴場","駐騎場").replace("駐脱場","駐騎場")
 

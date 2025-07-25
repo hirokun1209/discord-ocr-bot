@@ -1,3 +1,4 @@
-discord.py
-pytesseract
-Pillow
+easyocr
+torch
+torchvision
+torchaudio

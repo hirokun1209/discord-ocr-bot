@@ -9,28 +9,29 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# ===== 中央領域切り出し =====
+# ===== 中央領域切り出し（固定） =====
 def crop_center_area(img):
-    w,h = img.size
-    # 中央領域は35%〜65%のまま固定
+    w, h = img.size
+    # 中央部分：35%〜65%の範囲
     return img.crop((w*0.05, h*0.35, w*0.55, h*0.65))
 
-# ===== 分割関数（1枚目小さめ(1/6)、残りは大きめ(1/4)で統一） =====
-def split_preview_mixed_correct(center_raw):
+# ===== 分割関数（1枚目さらに小さい1/8、残りを等分） =====
+def split_preview_smaller_top(center_raw):
     w, h = center_raw.size
     parts = []
 
-    # --- Part1 = 小さめ(1/6) ---
-    part1_h = h // 6
+    # Part1 = さらに小さめ（1/8）
+    part1_h = h // 8
     part1 = center_raw.crop((0, 0, w, part1_h))
     parts.append(part1)
 
-    # --- Part2〜4 = 大きめ(1/4) ---
-    part_big_h = h // 4
+    # 残り7/8を3等分
+    remaining_height = h - part1_h
+    block_h = remaining_height // 3
 
     y_start = part1_h
     for _ in range(3):
-        y_end = y_start + part_big_h
+        y_end = y_start + block_h
         part = center_raw.crop((0, y_start, w, min(y_end, h)))
         parts.append(part)
         y_start = y_end
@@ -48,21 +49,21 @@ async def on_message(message):
         return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（1枚目小さめ・2枚目以降大きめプレビュー版）")
+        await message.channel.send("✅ BOT動いてるよ！（1枚目さらに小さく＋残り等分プレビュー版）")
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、中央OCR領域を分割します…")
+        await message.channel.send("📥 画像を受け取りました、中央領域を分割しています…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
             img = Image.open(BytesIO(img_data))
 
-            # === 中央OCR領域 ===
+            # === 中央OCR領域の切り出し ===
             center_raw = crop_center_area(img)
 
-            # 分割プレビュー（1枚目小さめ＋残り大きめ統一）
-            parts = split_preview_mixed_correct(center_raw)
+            # === 分割プレビュー生成 ===
+            parts = split_preview_smaller_top(center_raw)
             for idx, p_img in enumerate(parts):
                 buf = BytesIO()
                 p_img.save(buf, format="PNG")

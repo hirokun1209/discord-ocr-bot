@@ -41,10 +41,17 @@ def ocr_image(image_path, processed_path):
     img = preprocess_image(image_path, processed_path)
     return ocr_digits_only(img)
 
-def parse_time(text):
+def extract_time(text):
     """免戦時間(HH:MM:SS)抽出"""
-    m = re.search(r"\d{1,2}[:：]\d{1,2}[:：]\d{1,2}", text)
-    return m.group(0).replace("：", ":") if m else "開戦済"
+    m = re.search(r"\d{1,2}[:：]?\d{1,2}[:：]?\d{1,2}", text)
+    if m:
+        # 足りないコロンがあれば補正
+        time_val = m.group(0).replace("：", ":")
+        # 042137 → 04:21:37 の補正も対応
+        if len(time_val) == 6 and ":" not in time_val:
+            time_val = f"{time_val[0:2]}:{time_val[2:4]}:{time_val[4:6]}"
+        return time_val
+    return "開戦済"
 
 def crop_and_ocr(img_path):
     img = Image.open(img_path)
@@ -53,7 +60,8 @@ def crop_and_ocr(img_path):
     server_crop = "/tmp/debug_server.png"
     img.crop(server_box).save(server_crop)
     server_proc = "/tmp/debug_server_proc.png"
-    server_text = ocr_image(server_crop, server_proc)
+    server_raw = ocr_image(server_crop, server_proc)
+    server_text = server_raw  # そのまま表示(生テキスト)
 
     lines = []
     for i in range(3):
@@ -75,11 +83,12 @@ def crop_and_ocr(img_path):
         time_crop = f"/tmp/time_{i+1}.png"
         img.crop((time_box_x[0], y1, time_box_x[1], y2)).save(time_crop)
         time_proc = f"/tmp/time_proc_{i+1}.png"
-        time_text = ocr_image(time_crop, time_proc)
-        time_val = parse_time(time_text)
+        raw_text = ocr_image(time_crop, time_proc)
+        time_val = extract_time(raw_text)
 
         lines.append({
-            "time": time_val,
+            "raw_text": raw_text,    # OCR生テキスト
+            "time_val": time_val,    # 正規表現抽出結果
             "time_crop": time_crop,
             "time_proc": time_proc
         })
@@ -92,18 +101,19 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("✅ 画像受信！右側(免戦時間領域)だけOCRテストします…")
+        await message.channel.send("✅ 画像受信！右側(免戦時間領域)OCR＋生テキストデバッグします…")
 
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"
             await attachment.save(file_path)
 
-            server_text, server_proc, lines = crop_and_ocr(file_path)
+            server_raw, server_proc, lines = crop_and_ocr(file_path)
 
-            # OCR結果まとめ
-            result_msg = f"**サーバー番号:** {server_text}\n\n"
+            # OCR結果まとめ（生テキスト＋抽出結果両方表示）
+            result_msg = f"**サーバー番号OCR生テキスト:** \"{server_raw}\"\n\n"
             for idx, line in enumerate(lines, start=1):
-                result_msg += f"行{idx} → 免戦時間: {line['time']}\n"
+                result_msg += f"行{idx} → OCR生テキスト: \"{line['raw_text']}\"\n"
+                result_msg += f"　　　 → 抽出結果: {line['time_val']}\n"
 
             await message.channel.send(result_msg)
 
@@ -113,7 +123,7 @@ async def on_message(message):
             # 各行の右側OCRデバッグ画像を送信
             for idx, line in enumerate(lines, start=1):
                 await message.channel.send(
-                    f"行{idx} 免戦時間OCRデバッグ用画像",
+                    f"行{idx} 免戦時間OCRデバッグ用画像\n元画像 & 処理後画像",
                     files=[
                         discord.File(line["time_crop"], filename=f"行{idx}_時間_元画像.png"),
                         discord.File(line["time_proc"], filename=f"行{idx}_時間_処理画像.png"),

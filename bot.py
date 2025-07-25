@@ -1,6 +1,6 @@
 import discord
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 from io import BytesIO
 import re
 from datetime import datetime, timedelta
@@ -8,31 +8,36 @@ import os
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-BASE_OCR_CONFIG = "--oem 3 --psm 7"    # 1行
-SERVER_OCR_CONFIG = "--oem 3 --psm 6"  # 数字＋記号
-CENTER_OCR_CONFIG = "--oem 3 --psm 6"  # 複数行
+BASE_OCR_CONFIG = "--oem 3 --psm 7"
+CENTER_OCR_CONFIG = "--oem 3 --psm 6"
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# === 必要な範囲だけ抽出 ===
+# === 精度強化の前処理 ===
+def preprocess_image(img: Image.Image) -> Image.Image:
+    img = img.resize((img.width * 4, img.height * 4))  # 4倍拡大
+    img = img.convert("L")  # グレースケール
+    img = ImageEnhance.Contrast(img).enhance(4.0)  # コントラスト強化
+    img = img.point(lambda p: 255 if p > 170 else 0)  # 白黒化で細い文字も残す
+    img = img.filter(ImageFilter.SHARPEN)  # さらにシャープ化
+    return img
+
 def crop_top_right(img):
-    """右上(基準時間)"""
+    """右上の基準時間 → 高さ7〜13%"""
     w,h = img.size
     return img.crop((w*0.75, h*0.07, w*0.98, h*0.13))
 
-def crop_server_id(img):
-    """中央少し上(サーバー番号)"""
-    w,h = img.size
-    return img.crop((w*0.3, h*0.20, w*0.7, h*0.35))
-
 def crop_center_area(img):
-    """中央OCR → サーバー番号も含める縦30〜70%、横10〜50%"""
-    w, h = img.size
-    return img.crop((w * 0.1, h * 0.30, w * 0.5, h * 0.70))
+    """中央OCR → 元の範囲に戻す: 縦35〜70%、横10〜50%"""
+    w,h = img.size
+    return img.crop((w*0.1, h*0.35, w*0.5, h*0.70))
+
 def clean_text(text):
-    return text.replace("駐聴場","駐騎場").replace("駐脱場","駐騎場")
+    return (text.replace("駐聴場","駐騎場")
+                .replace("駐脱場","駐騎場")
+                .replace("越域駐豚場","越域駐騎場"))
 
 def extract_base_time(text):
     m = re.search(r'([0-2]?\d:[0-5]\d:[0-5]\d)', text)
@@ -57,42 +62,47 @@ async def on_message(message):
     if message.author.bot: return
 
     if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（リセット版）")
+        await message.channel.send("✅ BOT動いてるよ！（精度強化版）")
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、抽出リセット版で処理中…")
+        await message.channel.send("📥 画像を受け取りました、精度強化処理中…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
             img = Image.open(BytesIO(img_data))
 
-            # === 基準時間 ===
-            base_img = crop_top_right(img)
+            # === 基準時間OCR ===
+            base_img = preprocess_image(crop_top_right(img))
             base_img.save("/tmp/debug_base.png")
             await message.channel.send(file=discord.File("/tmp/debug_base.png","base_debug.png"))
             base_text = pytesseract.image_to_string(base_img, lang="jpn+eng", config=BASE_OCR_CONFIG)
             base_time = extract_base_time(base_text)
 
-            # === サーバー番号 ===
-            server_img = crop_server_id(img)
-            server_img.save("/tmp/debug_server.png")
-            await message.channel.send(file=discord.File("/tmp/debug_server.png","server_debug.png"))
-            server_text = pytesseract.image_to_string(server_img, lang="jpn+eng", config=SERVER_OCR_CONFIG)
-            server_id = extract_server_id(server_text)
-
-            # === 中央OCR ===
-            center_img = crop_center_area(img)
+            # === 中央OCR（精度強化前処理付き） ===
+            center_img = preprocess_image(crop_center_area(img))
             center_img.save("/tmp/debug_center.png")
             await message.channel.send(file=discord.File("/tmp/debug_center.png","center_debug.png"))
-            center_text = clean_text(pytesseract.image_to_string(center_img, lang="jpn+eng", config=CENTER_OCR_CONFIG))
-            station_numbers = extract_station_numbers(center_text)
-            immune_times = extract_times(center_text)
+            center_text_raw = pytesseract.image_to_string(center_img, lang="jpn+eng", config=CENTER_OCR_CONFIG)
+            center_text = clean_text(center_text_raw)
 
-            # === デバッグ表示 ===
+            # === 駐騎場行 + 次の行をセットで解析 ===
+            lines = center_text.splitlines()
+            paired_lines = []
+            for i, line in enumerate(lines):
+                if "駐騎場" in line:
+                    paired_lines.append(line + " " + (lines[i+1] if i+1 < len(lines) else ""))
+            filtered_text = "\n".join(paired_lines)
+
+            # デバッグ結果
             await message.channel.send(f"⏫ 基準時間OCR:\n```\n{base_text}\n```")
-            await message.channel.send(f"🖥 サーバーOCR:\n```\n{server_text}\n```")
-            await message.channel.send(f"📄 中央OCR結果:\n```\n{center_text}\n```")
+            await message.channel.send(f"📄 中央OCR結果(全体):\n```\n{center_text_raw}\n```")
+            await message.channel.send(f"📄 駐騎場＋次行ペア抽出:\n```\n{filtered_text}\n```")
+
+            # サーバー番号 / 駐騎場番号 / 免戦時間抽出（駐騎場＋次行から）
+            server_id = extract_server_id(filtered_text)
+            station_numbers = extract_station_numbers(filtered_text)
+            immune_times = extract_times(filtered_text)
 
             if not base_time:
                 await message.channel.send("⚠️ 基準時間が読めませんでした")
@@ -112,7 +122,7 @@ async def on_message(message):
                 )
                 return
 
-            # 計算
+            # === 計算 ===
             base_dt = datetime.strptime(base_time,"%H:%M:%S")
             results=[]
             for i,t in enumerate(immune_times):

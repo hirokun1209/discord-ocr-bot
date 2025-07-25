@@ -2,27 +2,35 @@ import os
 import discord
 from PIL import Image
 
+# ✅ 環境変数からトークンを読み込み
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# === 現在の仮座標 ===
-base_y = 480        # 1行目Y座標
-row_height = 160    # 各行の高さ
-num_box_x = (120, 250)   # 駐騎場番号
-time_box_x = (360, 540)  # 免戦時間
+# === 1290x2796専用の座標設定 ===
+# 1行目のY座標
+base_y = 874
+# 各行の高さ
+row_height = 291
+# 駐騎場番号のX範囲
+num_box_x = (218, 455)
+# 免戦時間のX範囲
+time_box_x = (655, 983)
 
 def crop_debug_images(img_path):
+    """駐騎場番号＆免戦時間を切り出して保存"""
     img = Image.open(img_path)
+    img_w, img_h = img.size
+    print(f"画像サイズ: {img_w} x {img_h}")
+
     cropped_paths = []
 
-    for i in range(3):
+    for i in range(3):  # 1枚に3行分だけ処理
         y1 = base_y + i * row_height
-        y2 = y1 + 50  # ボックス高さ50px
+        y2 = y1 + 90  # 高さは少し広めに確保
 
-        # 切り出しファイル名
         num_crop_path = f"/tmp/debug_num_{i+1}.png"
         time_crop_path = f"/tmp/debug_time_{i+1}.png"
 
@@ -41,7 +49,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("✅ 画像を受け取りました！切り出し確認します…")
+        await message.channel.send("✅ 画像を受け取りました！1290×2796専用モードで切り出し確認します…")
         
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"

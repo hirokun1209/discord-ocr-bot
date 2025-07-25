@@ -4,14 +4,15 @@ from PIL import Image
 import easyocr
 import re
 
+# ✅ Discord Token
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# === EasyOCR 初期化 ===
-reader = easyocr.Reader(['en'])  # 数字＆英語用
+# ✅ EasyOCR 初期化 (GPU無効化で軽量化)
+reader = easyocr.Reader(['en'], gpu=False)  # <<< ここが変更ポイント！
 
 # === 切り出し位置 ===
 base_y = 1095
@@ -80,7 +81,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("✅ EasyOCRで番号＆免戦時間を解析中…")
+        await message.channel.send("✅ EasyOCR(CPUモード)で番号＆免戦時間を解析中…")
 
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"

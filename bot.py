@@ -56,11 +56,17 @@ async def on_message(message):
             await message.channel.send(f"📄 日本語OCR結果:\n```\n{text_jpn}\n```")
             await message.channel.send(f"📄 英数字OCR結果:\n```\n{text_eng}\n```")
 
-            # === サーバー番号抽出（最後が正しい） ===
-            server_matches = re.findall(r'\[s\d{3,4}\]', text_jpn, re.IGNORECASE)
-            if server_matches:
-                last_server = server_matches[-1]  # ✅ 最後が正解
-                server_id = re.search(r'\d{3,4}', last_server).group()[-3:]
+            # === サーバー番号抽出（1〜999だけ有効） ===
+            server_matches = re.findall(r'\[s\d{2,4}\]', text_jpn, re.IGNORECASE)
+            valid_servers = []
+            for s in server_matches:
+                num = int(re.search(r'\d{2,4}', s).group())
+                # サーバー番号は1〜999まで有効（4桁は除外）
+                if 1 <= num <= 999:
+                    valid_servers.append(num)
+
+            if valid_servers:
+                server_id = str(valid_servers[-1])  # ✅ 最後の有効な3桁番号
             else:
                 server_id = "???"
 
@@ -79,53 +85,29 @@ async def on_message(message):
                 if t and 0 <= int(t.split(':')[0]) <= 6
             ]
 
-            # 時間が無ければ駐騎場だけ返す
-            if not immune_times:
+            # 免戦時間が駐騎場番号と一致しなければエラー
+            if len(station_numbers) != len(immune_times):
                 await message.channel.send(
+                    f"⚠️ データ数不一致\n"
                     f"サーバー番号: {server_id}\n"
-                    f"駐騎場番号: {', '.join(station_numbers) if station_numbers else 'なし'}\n"
-                    f"⚠️ 基準時間が見つかりません"
+                    f"駐騎場番号({len(station_numbers)}件): {', '.join(station_numbers) if station_numbers else 'なし'}\n"
+                    f"免戦時間({len(immune_times)}件): {', '.join(immune_times) if immune_times else 'なし'}"
                 )
-                continue
+                return
 
-            # 時間が1つだけなら基準時間のみ通知
-            if len(immune_times) == 1:
-                await message.channel.send(
-                    f"サーバー番号: {server_id}\n"
-                    f"駐騎場番号: {', '.join(station_numbers) if station_numbers else 'なし'}\n"
-                    f"⏰ 基準時間のみ検出: {immune_times[0]}"
-                )
-                continue
-
-            # 最初の時間は基準時間
-            base_time_str = immune_times[0]
-            base_time = datetime.strptime(base_time_str, "%H:%M:%S")
-            extra_times = immune_times[1:]  # 残りは免戦時間
-
-            # 駐騎場番号が1つしかない場合 → 全部同じ番号で出す
-            if len(station_numbers) == 1 and len(extra_times) > 1:
-                station_numbers = [station_numbers[0]] * len(extra_times)
-
-            # 駐騎場番号が足りない場合 → 順番割当で補う
-            while len(station_numbers) < len(extra_times):
-                station_numbers.append(str(len(station_numbers) + 1))
-
-            # 計算結果
+            # 基準時間が必要ならユーザー指定が前提なのでここでは免戦時間のみ対応
             results = []
-            for idx, t in enumerate(extra_times):
+            for idx, t in enumerate(immune_times):
                 station_name = f"越域駐騎場{station_numbers[idx]}"
                 h, m, s = map(int, t.split(":"))
-                delta = timedelta(hours=h, minutes=m, seconds=s)
-                new_time = (base_time + delta).time()
-                results.append(f"{station_name}({server_id}) {new_time}")
+                # 基準時間が無いので免戦時間そのまま表示（ユーザー指定モードでもOK）
+                results.append(f"{station_name}({server_id}) +{h:02}:{m:02}:{s:02}")
 
             if results:
                 await message.channel.send("\n".join(results))
             else:
                 await message.channel.send(
-                    f"サーバー番号: {server_id}\n"
-                    f"駐騎場番号: {', '.join(station_numbers) if station_numbers else 'なし'}\n"
-                    f"⏰ 基準時間: {base_time_str}（免戦時間なし）"
+                    f"サーバー番号: {server_id}\n駐騎場番号なし or 免戦時間なし"
                 )
 
 client.run(TOKEN)

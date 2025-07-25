@@ -11,11 +11,10 @@ client = discord.Client(intents=intents)
 # === サーバー番号は完璧なので現状維持 ===
 server_box = (420, 970, 870, 1040)
 
-# === 駐騎場は右に20px、下に5px調整 ===
-base_y = 1095            # 5px下げる
-row_height = 310         # 行間はそのまま
-num_box_x = (270, 610)   # 右に20pxずらす
-time_box_x = (690, 1190) # 右に20pxずらす
+# === 駐騎場番号＋免戦時間まとめて切る ===
+base_y = 1095             # 下に5px補正
+row_height = 310          # 行間はそのまま
+full_box_x = (270, 1200)  # 番号＋免戦時間、右に10拡張
 
 def crop_debug_images(img_path):
     img = Image.open(img_path)
@@ -28,18 +27,14 @@ def crop_debug_images(img_path):
     server_crop_path = "/tmp/debug_server.png"
     img.crop(server_box).save(server_crop_path)
 
-    # ✅ 駐騎場3行を右20・下5補正で切り出す
+    # ✅ 駐騎場番号＋免戦時間を1枚で切り出す
     for i in range(3):
         y1 = base_y + i * row_height
-        y2 = y1 + 110
+        y2 = y1 + 110  # 高さはそのまま
 
-        num_crop_path = f"/tmp/debug_num_{i+1}.png"
-        time_crop_path = f"/tmp/debug_time_{i+1}.png"
-
-        img.crop((num_box_x[0], y1, num_box_x[1], y2)).save(num_crop_path)
-        img.crop((time_box_x[0], y1, time_box_x[1], y2)).save(time_crop_path)
-
-        cropped_paths.append((num_crop_path, time_crop_path))
+        full_crop_path = f"/tmp/debug_full_{i+1}.png"
+        img.crop((full_box_x[0], y1, full_box_x[1], y2)).save(full_crop_path)
+        cropped_paths.append(full_crop_path)
 
     return server_crop_path, cropped_paths
 
@@ -49,7 +44,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("✅ 画像を受け取りました！駐騎場を右に20px・下に5px調整して切り出します…")
+        await message.channel.send("✅ 画像を受け取りました！駐騎場番号＋免戦時間を1枚にまとめて切り出します（右に10px拡張済）…")
         
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"
@@ -57,17 +52,14 @@ async def on_message(message):
 
             server_img, crops = crop_debug_images(file_path)
 
-            # サーバー番号画像（変更なし）
+            # サーバー番号画像（そのまま）
             await message.channel.send("サーバー番号の切り出し結果", file=discord.File(server_img))
 
-            # 駐騎場3行分（右20px・下5px補正）
-            for idx, (num_img, time_img) in enumerate(crops, start=1):
+            # 駐騎場番号＋免戦時間（1枚にまとめたもの）
+            for idx, full_img in enumerate(crops, start=1):
                 await message.channel.send(
-                    f"行{idx} の切り出し結果（駐騎場番号 / 免戦時間）",
-                    files=[
-                        discord.File(num_img, filename=f"行{idx}_番号.png"),
-                        discord.File(time_img, filename=f"行{idx}_時間.png")
-                    ]
+                    f"行{idx} の切り出し結果（駐騎場番号＋免戦時間）",
+                    file=discord.File(full_img, filename=f"行{idx}_番号_免戦時間.png")
                 )
 
 client.run(TOKEN)

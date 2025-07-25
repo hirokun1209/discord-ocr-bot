@@ -10,38 +10,38 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# ===== OCRユーティリティ =====
-def preprocess_for_station(img: Image.Image):
-    # グレースケール → 二値化 → シャープ化
-    proc = img.convert("L").point(lambda x: 0 if x < 140 else 255, '1')
-    proc = proc.filter(ImageFilter.SHARPEN)
-    return proc
+# === 強力前処理 ===
+def preprocess_for_station_strong(img: Image.Image):
+    gray = img.convert("L")
+    # コントラスト強調
+    gray = gray.point(lambda x: min(255, int(x * 1.4)))
+    # 二値化(しきい値160)
+    binary = gray.point(lambda x: 0 if x < 160 else 255, '1')
+    # シャープ化
+    sharp = binary.filter(ImageFilter.SHARPEN)
+    return sharp
 
-def ocr_japanese(img: Image.Image):
-    config = "--oem 3 --psm 6"
+# === 行単位日本語OCR ===
+def ocr_japanese_line(img: Image.Image):
+    config = "--oem 3 --psm 7"
     return pytesseract.image_to_string(img, lang="jpn", config=config)
 
-def ocr_numbers_only(img: Image.Image):
-    config = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789:"
-    raw = pytesseract.image_to_string(img, lang="eng", config=config)
-    raw = raw.replace("O","0").replace("o","0").replace("B","8")
-    return raw
+# === OCR補正 ===
+def normalize_station_text(text: str):
+    return (text.replace("須場","騎場")
+                .replace("前場","騎場")
+                .replace("崎場","騎場")
+                .replace("駐須","駐騎")
+                .replace("駐前","駐騎")
+                .replace("駐崎","駐騎"))
 
-def normalize_time_format(line: str):
-    m = re.search(r'([0-2]?\d:[0-5]\d:[0-5]\d)', line)
-    if m:
-        return m.group(1)
-    m2 = re.search(r'(\d{6})', line)
-    if m2:
-        s = m2.group(1)
-        return f"{s[0:2]}:{s[2:4]}:{s[4:6]}"
-    return None
+# === 駐騎場番号抽出 ===
+def extract_station_number_strict(text: str):
+    text = normalize_station_text(text)
+    m = re.findall(r'駐騎場\s*(\d{1,2})', text)
+    return [x for x in m if x.isdigit() and 1 <= int(x) <= 12]
 
-def extract_station_numbers(text: str):
-    nums = re.findall(r'駐.*?場\s*(\d{1,2})', text)
-    return [n for n in nums if n.isdigit() and 1 <= int(n) <= 12]
-
-# ===== 中央領域切り出し =====
+# === 中央領域切り出し ===
 def crop_center_area(img):
     w,h = img.size
     return img.crop((w*0.05, h*0.35, w*0.55, h*0.65))
@@ -49,10 +49,8 @@ def crop_center_area(img):
 def split_preview_smaller_all(center_raw):
     w, h = center_raw.size
     parts = []
-    # Part1 = 1/8
     part1_h = h // 8
     parts.append(center_raw.crop((0, 0, w, part1_h)))
-    # 残りを4分割 → 3枚だけ使う
     remaining_height = h - part1_h
     block_h = remaining_height // 4
     y_start = part1_h
@@ -71,12 +69,12 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.content.strip() == "!test2":
-        await message.channel.send("✅ 駐騎場OCRテストモード起動（Part2〜4プレビュー）")
+    if message.content.strip() == "!test3":
+        await message.channel.send("✅ 駐騎場OCR強力前処理テストモード起動！")
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像受信！駐騎場番号＆免戦時間OCRテストします…")
+        await message.channel.send("📥 画像受信！強処理OCRテスト中…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
@@ -86,28 +84,24 @@ async def on_message(message):
 
             # Part2〜4だけテスト
             for idx, b in enumerate(blocks[1:], start=2):
-                # 前処理
-                proc = preprocess_for_station(b)
+                proc = preprocess_for_station_strong(b)
 
-                # 日本語OCR → 駐騎場番号
-                jp_text = ocr_japanese(proc)
-                station_nums = extract_station_numbers(jp_text)
+                # OCR結果（補正前）
+                raw_text = ocr_japanese_line(proc)
+                fixed_text = normalize_station_text(raw_text)
+                station_nums = extract_station_number_strict(raw_text)
 
-                # 「免戦」があれば数字OCRでもう一度
-                immune_time = None
-                if "免戦" in jp_text or "院戦" in jp_text:
-                    num_raw = ocr_numbers_only(proc)
-                    immune_time = normalize_time_format(num_raw)
-
-                # 元画像・前処理画像送信
+                # 画像送信
                 buf_raw = BytesIO(); b.save(buf_raw, format="PNG"); buf_raw.seek(0)
                 buf_proc = BytesIO(); proc.save(buf_proc, format="PNG"); buf_proc.seek(0)
 
-                result_msg = f"📸 Part{idx} OCR結果\n```\n{jp_text}\n```"
+                result_msg = (
+                    f"📸 Part{idx} OCR結果\n"
+                    f"**補正前:**\n```\n{raw_text}\n```\n"
+                    f"**補正後:**\n```\n{fixed_text}\n```\n"
+                )
                 if station_nums:
-                    result_msg += f"\n✅ 駐騎場番号: {station_nums}"
-                if immune_time:
-                    result_msg += f"\n⏳ 免戦時間: {immune_time}"
+                    result_msg += f"✅ 抽出駐騎場番号: {station_nums}"
 
                 await message.channel.send(
                     result_msg,

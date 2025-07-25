@@ -1,9 +1,8 @@
 import discord
-from PIL import Image
+from PIL import Image, ImageFilter
 from io import BytesIO
 import pytesseract
 import re, os
-from datetime import datetime, timedelta
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -12,36 +11,37 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 # ===== OCRユーティリティ =====
-def ocr_text(img: Image.Image, psm=4):
-    config = f"--oem 3 --psm {psm}"
-    return pytesseract.image_to_string(img, lang="jpn+eng", config=config)
+def preprocess_for_station(img: Image.Image):
+    # グレースケール → 二値化 → シャープ化
+    proc = img.convert("L").point(lambda x: 0 if x < 140 else 255, '1')
+    proc = proc.filter(ImageFilter.SHARPEN)
+    return proc
 
-def ocr_time_line(img: Image.Image):
+def ocr_japanese(img: Image.Image):
+    config = "--oem 3 --psm 6"
+    return pytesseract.image_to_string(img, lang="jpn", config=config)
+
+def ocr_numbers_only(img: Image.Image):
     config = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789:"
-    return pytesseract.image_to_string(img, lang="eng", config=config)
+    raw = pytesseract.image_to_string(img, lang="eng", config=config)
+    raw = raw.replace("O","0").replace("o","0").replace("B","8")
+    return raw
 
 def normalize_time_format(line: str):
-    line = line.replace("O","0").replace("o","0").replace("B","8")
-    m = re.search(r'(\d{6})', line)
+    m = re.search(r'([0-2]?\d:[0-5]\d:[0-5]\d)', line)
     if m:
-        raw = m.group(1)
-        return f"{raw[0:2]}:{raw[2:4]}:{raw[4:6]}"
-    m2 = re.search(r'([0-2]?\d:[0-5]\d:[0-5]\d)', line)
+        return m.group(1)
+    m2 = re.search(r'(\d{6})', line)
     if m2:
-        return m2.group(1)
+        s = m2.group(1)
+        return f"{s[0:2]}:{s[2:4]}:{s[4:6]}"
     return None
 
-# ===== サーバー番号専用OCR =====
-def ocr_server_id(img: Image.Image):
-    # モノクロ化 & コントラスト強化
-    proc = img.convert("L").point(lambda x: 0 if x < 140 else 255, '1')
-    config = "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789sS[]"
-    raw = pytesseract.image_to_string(proc, lang="eng", config=config)
-    raw = raw.replace("O","0").replace("o","0")
-    m = re.findall(r'\[?s?(\d{3,4})\]?', raw, re.IGNORECASE)
-    return (m[-1] if m else None), proc
+def extract_station_numbers(text: str):
+    nums = re.findall(r'駐.*?場\s*(\d{1,2})', text)
+    return [n for n in nums if n.isdigit() and 1 <= int(n) <= 12]
 
-# ===== 切り出し領域 =====
+# ===== 中央領域切り出し =====
 def crop_center_area(img):
     w,h = img.size
     return img.crop((w*0.05, h*0.35, w*0.55, h*0.65))
@@ -62,10 +62,6 @@ def split_preview_smaller_all(center_raw):
         y_start = y_end
     return parts
 
-def extract_station_numbers(text):
-    nums = re.findall(r'駐.*?場\s*(\d+)', text)
-    return [n for n in nums if n.isdigit() and 1 <= int(n) <= 12]
-
 @client.event
 async def on_ready():
     print(f"✅ BOTログイン成功: {client.user}")
@@ -75,70 +71,50 @@ async def on_message(message):
     if message.author.bot:
         return
 
-    if message.content.strip() == "!test":
-        await message.channel.send("✅ BOT動いてるよ！（サーバーOCRプレビュー付き版）")
+    if message.content.strip() == "!test2":
+        await message.channel.send("✅ 駐騎場OCRテストモード起動（Part2〜4プレビュー）")
         return
 
     if message.attachments:
-        await message.channel.send("📥 画像を受け取りました、分割→OCRプレビューします…")
+        await message.channel.send("📥 画像受信！駐騎場番号＆免戦時間OCRテストします…")
 
         for attachment in message.attachments:
             img_data = await attachment.read()
-
-            # ファイルタイムスタンプ取得
-            tmp_path = f"/tmp/{attachment.filename}"
-            with open(tmp_path, "wb") as f:
-                f.write(img_data)
-            stat = os.stat(tmp_path)
-            base_dt = datetime.fromtimestamp(stat.st_mtime)
-            base_time_str = base_dt.strftime("%H:%M:%S")
-
             img = Image.open(BytesIO(img_data))
             center_raw = crop_center_area(img)
             blocks = split_preview_smaller_all(center_raw)
 
-            # === Part1: サーバー番号OCR + プレビュー ===
-            server_img = blocks[0]
-            server_id, proc_img = ocr_server_id(server_img)
-
-            buf1 = BytesIO(); server_img.save(buf1, format="PNG"); buf1.seek(0)
-            buf2 = BytesIO(); proc_img.save(buf2, format="PNG"); buf2.seek(0)
-            await message.channel.send(
-                f"📸 Part1 サーバー番号OCR結果: {server_id if server_id else '読めず'}",
-                files=[
-                    discord.File(buf1, "server_raw.png"),
-                    discord.File(buf2, "server_processed.png")
-                ]
-            )
-
-            # === Part2〜4: 駐騎場番号＆免戦時間 + プレビュー ===
-            pairs = []
+            # Part2〜4だけテスト
             for idx, b in enumerate(blocks[1:], start=2):
-                text = ocr_text(b, psm=4)
-                station_nums = extract_station_numbers(text)
+                # 前処理
+                proc = preprocess_for_station(b)
 
-                # プレビュー画像送信
-                tmp_buf = BytesIO(); b.save(tmp_buf, format="PNG"); tmp_buf.seek(0)
+                # 日本語OCR → 駐騎場番号
+                jp_text = ocr_japanese(proc)
+                station_nums = extract_station_numbers(jp_text)
+
+                # 「免戦」があれば数字OCRでもう一度
+                immune_time = None
+                if "免戦" in jp_text or "院戦" in jp_text:
+                    num_raw = ocr_numbers_only(proc)
+                    immune_time = normalize_time_format(num_raw)
+
+                # 元画像・前処理画像送信
+                buf_raw = BytesIO(); b.save(buf_raw, format="PNG"); buf_raw.seek(0)
+                buf_proc = BytesIO(); proc.save(buf_proc, format="PNG"); buf_proc.seek(0)
+
+                result_msg = f"📸 Part{idx} OCR結果\n```\n{jp_text}\n```"
+                if station_nums:
+                    result_msg += f"\n✅ 駐騎場番号: {station_nums}"
+                if immune_time:
+                    result_msg += f"\n⏳ 免戦時間: {immune_time}"
+
                 await message.channel.send(
-                    f"📸 Part{idx} OCR結果:\n{text}",
-                    file=discord.File(tmp_buf, f"center_part_{idx}.png")
+                    result_msg,
+                    files=[
+                        discord.File(buf_raw, f"part{idx}_raw.png"),
+                        discord.File(buf_proc, f"part{idx}_processed.png")
+                    ]
                 )
-
-                if station_nums and ("免戦" in text or "院戦" in text):
-                    raw_time = ocr_time_line(b)
-                    t = normalize_time_format(raw_time)
-                    if t:
-                        pairs.append((station_nums[0], t))
-
-            # === 最終結果出力 ===
-            if server_id and pairs:
-                results = [f"📸 スクショ基準時間: {base_time_str} / サーバー: {server_id}"]
-                for st, immune_t in pairs:
-                    hms = list(map(int, immune_t.split(":"))); hms += [0]*(3-len(hms))
-                    end_dt = (base_dt + timedelta(hours=hms[0], minutes=hms[1], seconds=hms[2])).time()
-                    results.append(f"越域駐騎場{st} → 終了 {end_dt.strftime('%H:%M:%S')}")
-                await message.channel.send("\n".join(results))
-            else:
-                await message.channel.send("⚠️ サーバー or 駐騎場/免戦時間が読めませんでした")
 
 client.run(TOKEN)

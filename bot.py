@@ -2,22 +2,19 @@ import os
 import discord
 from PIL import Image
 
-# ✅ 環境変数からトークンを取得
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# === 1290x2796専用の改良座標 ===
-# サーバー番号切り出し範囲（画面中央上あたり）
-server_box = (420, 730, 870, 800)
+# === 1290x2796専用 座標を1行分(310px)下にずらした版 ===
+server_box = (420, 730 + 310, 870, 800 + 310)
 
-# 駐騎場3行分の座標
-base_y = 930         # さらに下に補正
-row_height = 310     # 行間を広めに
-num_box_x = (180, 520)    # 駐騎場番号ボックス（広め）
-time_box_x = (600, 1100)  # 免戦時間ボックス（広め）
+base_y = 930 + 310        # 1240に補正
+row_height = 310
+num_box_x = (180, 520)
+time_box_x = (600, 1100)
 
 def crop_debug_images(img_path):
     img = Image.open(img_path)
@@ -33,7 +30,7 @@ def crop_debug_images(img_path):
     # ✅ 駐騎場3行分を切り出す
     for i in range(3):
         y1 = base_y + i * row_height
-        y2 = y1 + 110  # 高さも広めに確保
+        y2 = y1 + 110  # 高さは広めに確保
 
         num_crop_path = f"/tmp/debug_num_{i+1}.png"
         time_crop_path = f"/tmp/debug_time_{i+1}.png"
@@ -51,7 +48,7 @@ async def on_message(message):
         return
 
     if message.attachments:
-        await message.channel.send("✅ 画像を受け取りました！サーバー番号＋駐騎場3行分を切り出します…")
+        await message.channel.send("✅ 画像を受け取りました！切り出し位置を1行分下にずらして確認します…")
         
         for attachment in message.attachments:
             file_path = f"/tmp/{attachment.filename}"

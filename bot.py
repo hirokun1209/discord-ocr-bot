@@ -8,7 +8,6 @@ import os
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# OCRモード: 1行単位で解析
 OCR_CONFIG = "--oem 3 --psm 7"
 
 intents = discord.Intents.default()
@@ -17,25 +16,24 @@ client = discord.Client(intents=intents)
 
 def preprocess_image(img: Image.Image) -> Image.Image:
     """OCR前に画像拡大＋補正"""
-    img = img.resize((img.width * 2, img.height * 2))  # 2倍拡大で小さい文字の精度UP
-    img = img.convert("L")  # グレースケール
+    img = img.resize((img.width * 2, img.height * 2))  # 2倍拡大で小さい文字も読みやすく
+    img = img.convert("L")  # グレースケール化
     img = ImageEnhance.Contrast(img).enhance(2.0)  # コントラスト強調
     img = img.filter(ImageFilter.SHARPEN)  # シャープ化
     return img
 
 def crop_top_right(img: Image.Image) -> Image.Image:
-    """右上(基準時間) → 上下をさらに狭くする"""
+    """右上(基準時間) → ピンポイントで高さ7〜13%"""
     w, h = img.size
-    # 横幅75%〜98%、高さ7%〜13%
     return img.crop((w * 0.75, h * 0.07, w * 0.98, h * 0.13))
 
 def crop_center_area(img: Image.Image) -> Image.Image:
-    """中央OCR → 高さ35〜75%に広げる"""
+    """中央OCR → 下を狭めて高さ35〜70%"""
     w, h = img.size
-    return img.crop((w * 0.1, h * 0.35, w * 0.9, h * 0.75))
+    return img.crop((w * 0.1, h * 0.35, w * 0.9, h * 0.70))
 
 def clean_ocr_text(text: str) -> str:
-    """OCR結果の不要文字修正"""
+    """OCR結果の不要文字補正"""
     text = text.replace("を奪取しました", "")
     text = text.replace("奪取撃破数", "")
     text = text.replace("警備撃破数", "")
@@ -113,7 +111,7 @@ async def on_message(message):
             base_text = pytesseract.image_to_string(base_img, lang="eng", config="--psm 7")
             base_time = extract_base_time(base_text)
 
-            # === 中央OCR（駐騎場情報広め） ===
+            # === 中央OCR（駐騎場情報 下を狭めた版） ===
             center_img = preprocess_image(crop_center_area(img))
             center_img.save("/tmp/debug_center.png")
             await message.channel.send(file=discord.File("/tmp/debug_center.png", "center_debug.png"))
@@ -129,12 +127,10 @@ async def on_message(message):
             station_numbers = extract_station_numbers(center_text)
             immune_times = extract_times(center_text)
 
-            # 基準時間が読めなかった場合
             if not base_time:
                 await message.channel.send("⚠️ 基準時間が右上から読み取れませんでした")
                 return
 
-            # データ数が一致しない場合は警告
             if len(station_numbers) != len(immune_times):
                 await message.channel.send(
                     f"⚠️ データ数不一致\n"
